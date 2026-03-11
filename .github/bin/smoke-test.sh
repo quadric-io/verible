@@ -133,25 +133,25 @@ KnownProjectToolIssue[project:caliptra-rtl]=1946
 # removed.
 declare -A ExpectedFailCount
 
-ExpectedFailCount[syntax:ibex]=17
-ExpectedFailCount[lint:ibex]=17
-ExpectedFailCount[project:ibex]=222
-ExpectedFailCount[preprocessor:ibex]=394
+ExpectedFailCount[syntax:ibex]=13
+ExpectedFailCount[lint:ibex]=13
+ExpectedFailCount[project:ibex]=223
+ExpectedFailCount[preprocessor:ibex]=397
 
-ExpectedFailCount[syntax:opentitan]=101
-ExpectedFailCount[lint:opentitan]=101
-ExpectedFailCount[project:opentitan]=1155
+ExpectedFailCount[syntax:opentitan]=90
+ExpectedFailCount[lint:opentitan]=90
+ExpectedFailCount[project:opentitan]=1165
 ExpectedFailCount[formatter:opentitan]=0
-ExpectedFailCount[preprocessor:opentitan]=3015
+ExpectedFailCount[preprocessor:opentitan]=3034
 
 ExpectedFailCount[syntax:sv-tests]=74
 ExpectedFailCount[lint:sv-tests]=73
-ExpectedFailCount[project:sv-tests]=177
-ExpectedFailCount[preprocessor:sv-tests]=129
+ExpectedFailCount[project:sv-tests]=176
+ExpectedFailCount[preprocessor:sv-tests]=128
 
 ExpectedFailCount[syntax:caliptra-rtl]=39
 ExpectedFailCount[lint:caliptra-rtl]=38
-ExpectedFailCount[project:caliptra-rtl]=440
+ExpectedFailCount[project:caliptra-rtl]=439
 ExpectedFailCount[preprocessor:caliptra-rtl]=901
 
 ExpectedFailCount[syntax:Cores-VeeR-EH2]=2
@@ -197,8 +197,8 @@ ExpectedFailCount[lint:nontrivial-mips]=2
 ExpectedFailCount[project:nontrivial-mips]=81
 ExpectedFailCount[preprocessor:nontrivial-mips]=78
 
-ExpectedFailCount[project:axi]=81
-ExpectedFailCount[preprocessor:axi]=78
+ExpectedFailCount[project:axi]=82
+ExpectedFailCount[preprocessor:axi]=79
 
 ExpectedFailCount[syntax:rsd]=5
 ExpectedFailCount[lint:rsd]=5
@@ -211,11 +211,11 @@ ExpectedFailCount[preprocessor:scr1]=46
 ExpectedFailCount[project:serv]=1
 ExpectedFailCount[preprocessor:serv]=1
 
-ExpectedFailCount[syntax:basejump_stl]=495
-ExpectedFailCount[lint:basejump_stl]=495
-ExpectedFailCount[project:basejump_stl]=615
+ExpectedFailCount[syntax:basejump_stl]=499
+ExpectedFailCount[lint:basejump_stl]=499
+ExpectedFailCount[project:basejump_stl]=620
 ExpectedFailCount[formatter:basejump_stl]=1
-ExpectedFailCount[preprocessor:basejump_stl]=654
+ExpectedFailCount[preprocessor:basejump_stl]=659
 
 ExpectedFailCount[syntax:opl3_fpga]=2
 ExpectedFailCount[lint:opl3_fpga]=2
