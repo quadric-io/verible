@@ -77,9 +77,8 @@ jobs:
         key: bazelcache_x86_64_${{ matrix.mode }}_${{ steps.cache_timestamp.outputs.time }}
         restore-keys: bazelcache_x86_64_${{ matrix.mode }}_
 
-    - name: Install Dependencies
+    - name: Install Bazel
       run: |
-        set -x
         source ./.github/settings.sh
         ARCH=x86_64 ./.github/bin/install-bazel.sh
 
@@ -93,7 +92,7 @@ jobs:
         .github/bin/simple-install.sh verible-${VERSION}/bin
         tar cvzf verible-${VERSION}-linux-static-x86_64.tar.gz verible-${VERSION}
 
-    - name: 📤 Upload static binary artifact
+    - name: Upload static binary artifact
       if: matrix.mode == 'compile-static'
       uses: actions/upload-artifact@v4
       with:
@@ -122,13 +121,11 @@ jobs:
     - name: Mount bazel cache
       uses: actions/cache@v3
       with:
-        path: |
-          /private/var/tmp/_bazel_runner
+        path: /private/var/tmp/_bazel_runner
         key: bazelcache_macos_${{ steps.cache_timestamp.outputs.time }}
         restore-keys: bazelcache_macos_
 
     - name: Tests
-      # MacOS has a broken patch utility that causes lint-tool_test to fail
       run: bazel test -c opt --noshow_progress --test_output=errors --cxxopt=-Wno-range-loop-analysis -- //... -//verible/verilog/tools/lint:lint-tool_test
 
     - name: Build
@@ -142,7 +139,7 @@ jobs:
         .github/bin/simple-install.sh verible-${VERSION}-macOS/bin
         tar cvzf verible-${VERSION}-macOS.tar.gz verible-${VERSION}-macOS
 
-    - name: 📤 Upload artifact
+    - name: Upload macOS artifact
       uses: actions/upload-artifact@v4
       with:
         name: verible-install-macos
@@ -172,7 +169,7 @@ jobs:
         sed -i 's|\(.*tag.*\): "\([^"]\+\)"|\1: "'${TAG}'"|g' package.json
         vsce package
 
-    - name: 📤 Upload vsix artifact
+    - name: Upload vsix artifact
       uses: actions/upload-artifact@v4
       with:
         name: verible-vscode-extension
