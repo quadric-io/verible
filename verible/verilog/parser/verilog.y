@@ -674,6 +674,7 @@ is not locally defined, so the grammar here uses only generic identifiers.
 /* QPP (Quadric Python Preprocessor) tokens — treated as opaque pass-throughs */
 %token TK_QPP_DIRECTIVE "<<qpp-directive>>"
 %token TK_QPP_INLINE_EXPR "<<qpp-inline-expr>>"
+%token TK_QPP_BLOCK "<<qpp-block>>"
 
 %token TK_FILEPATH "<<filepath>>"
 

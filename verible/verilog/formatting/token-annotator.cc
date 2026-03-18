@@ -780,12 +780,14 @@ static WithReason<SpacingOptions> BreakDecisionBetween(
     return {SpacingOptions::kMustAppend, "QPP inline expression: no space"};
   }
 
-  // QPP directive lines must stay at column 0 so the QPP preprocessor's '^;'
-  // pattern recognizes them after formatting.  kPreserve keeps the original
-  // newline + 0-indentation from the source file intact.
+  // QPP directive lines and opaque blocks must stay at column 0 so the QPP
+  // preprocessor's '^;' pattern recognizes them after formatting.
+  // kPreserve keeps the original newline + 0-indentation intact.
   if (left.format_token_enum == FTT::qpp_directive ||
-      right.format_token_enum == FTT::qpp_directive) {
-    return {SpacingOptions::kPreserve, "QPP directive: preserve column-0 position"};
+      right.format_token_enum == FTT::qpp_directive ||
+      left.format_token_enum == FTT::qpp_block ||
+      right.format_token_enum == FTT::qpp_block) {
+    return {SpacingOptions::kPreserve, "QPP directive/block: preserve column-0 position"};
   }
 
   // Check for mandatory line breaks.

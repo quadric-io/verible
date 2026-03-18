@@ -68,6 +68,11 @@ class VerilogLexer : public verible::FlexLexerAdapter<verilogFlexLexer> {
   // In the MACRO_ARG_UNLEXED state  (verilog.lex), track the number of
   // characters excluding trailing spaces/newlines.
   int macro_arg_length_ = 0;
+
+  // Nesting depth for QPP opaque block accumulation (QPP_BLOCK state).
+  // Incremented on column-0 ^;if, decremented on column-0 ^;pass.
+  // Block token is emitted when depth returns to 0.
+  int qpp_block_depth_ = 0;
 };
 
 // Recursively lex the given 'text', and apply 'func' to each subtoken.

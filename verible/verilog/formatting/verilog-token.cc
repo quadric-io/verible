@@ -524,6 +524,7 @@ static const absl::node_hash_map<verilog_tokentype, FTT> &FormatTokenTypeMap() {
       // QPP (Quadric Python Preprocessor) constructs
       {verilog_tokentype::TK_QPP_DIRECTIVE, FTT::qpp_directive},
       {verilog_tokentype::TK_QPP_INLINE_EXPR, FTT::qpp_inline_expr},
+      {verilog_tokentype::TK_QPP_BLOCK, FTT::qpp_block},
 
       // TODO(fangism): {verilog_tokentype::TK_LINE_CONT, FTT::???},
   });

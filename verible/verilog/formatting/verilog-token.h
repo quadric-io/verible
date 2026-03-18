@@ -38,6 +38,7 @@ enum FormatTokenType {
   eol_comment,    // // comment
   qpp_directive,   // ;python statement (QPP line directive)
   qpp_inline_expr, // `python_expr` (QPP inline expression)
+  qpp_block,       // entire ;if...;pass block (opaque multi-line atom)
 };
 
 // Converts a leaf token enum into a FormatTokenType enum for categorizing

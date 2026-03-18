@@ -48,7 +48,8 @@ bool VerilogLexer::KeepSyntaxTreeTokens(const TokenInfo &t) {
     case TK_NEWLINE:
     case TK_LINE_CONT:
     case TK_QPP_DIRECTIVE:    // fall-through: QPP line directives are opaque
-    case TK_QPP_INLINE_EXPR:  // QPP inline expressions are opaque atoms
+    case TK_QPP_INLINE_EXPR:  // fall-through: QPP inline expressions are opaque atoms
+    case TK_QPP_BLOCK:        // QPP opaque block (entire ;if...;pass)
       // TODO(fangism): preserve newlines until after some preprocessing steps.
       return false;
     default:

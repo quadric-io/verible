@@ -99,6 +99,7 @@
 %x IN_EOL_COMMENT
 %x LIBRARY_EXPECT_ID
 %x LIBRARY_FILEPATHS
+%x QPP_BLOCK
 
 /* identifier */
 Alpha [a-zA-Z]
@@ -274,10 +275,48 @@ PragmaEndProtected {Pragma}{Space}+protect{Space}+end_protected
 <ENCRYPTED>{RestOfLine}             {  UpdateLocation(); /* ignore */ }
 
 
-  /* QPP directive lines: must be matched before any other rule since ';' is
-   * also a valid SV token.  The '^' anchor ensures this only fires at
-   * line-start.  The entire line (excluding the terminating newline, which is
-   * returned to the input stream) is consumed as an opaque atom. */
+  /* QPP opaque block: a column-0 ';if' line opens a conditional block that
+   * may span unbalanced SV begin/end across its branches.  Accumulate the
+   * entire ;if...;pass block (including any nested column-0 ;if/;pass pairs)
+   * as a single TK_QPP_BLOCK token so the parser never sees the interior SV.
+   * Must be listed before {QppDirective} so this longer-context rule wins. */
+^;if[^\n]* {
+  qpp_block_depth_ = 1;
+  yymore();
+  yy_push_state(QPP_BLOCK);
+}
+
+<QPP_BLOCK>{
+  /* Nested column-0 ;if increments depth */
+  ^;if[^\n]*\n {
+    ++qpp_block_depth_;
+    yymore();
+  }
+  /* Column-0 ;pass decrements depth; emit block when outer level closes */
+  ^;pass[^\n]*\n {
+    --qpp_block_depth_;
+    if (qpp_block_depth_ == 0) {
+      UpdateLocation();
+      yy_pop_state();
+      return TK_QPP_BLOCK;
+    }
+    yymore();
+  }
+  /* EOF inside an unclosed QPP block — emit whatever was accumulated */
+  <<EOF>> {
+    UpdateLocationEOF();
+    yy_pop_state();
+    return TK_QPP_BLOCK;
+  }
+  /* All other lines (SV code, ;else:, ;for, indented ;    if/;    pass, etc.) */
+  [^\n]*\n { yymore(); }
+  \n        { yymore(); }
+}
+
+  /* QPP directive lines (non-block): must be matched before any other rule
+   * since ';' is also a valid SV token.  The '^' anchor ensures this only
+   * fires at line-start.  The entire line (excluding the terminating newline,
+   * which is returned to the input stream) is consumed as an opaque atom. */
 {QppDirective} { UpdateLocation(); return TK_QPP_DIRECTIVE; }
 
   /* QPP inline expressions: backtick-delimited Python expressions that expand
