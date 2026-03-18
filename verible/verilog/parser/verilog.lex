@@ -178,17 +178,19 @@ UnterminatedEvalStringLiteral `\"{EvalStringLiteralContent}
 EvalStringLiteral {UnterminatedEvalStringLiteral}`\"
 
 /* QPP (Quadric Python Preprocessor) constructs */
-/* Directive lines: entire line starting with ';' is a Python statement */
-QppDirective ^;[^\n]*
-/* Inline expressions: backtick-delimited Python expression, e.g. `config['NAME']`
- * '(' and ' ' (space) are excluded from the content:
- *   - '(' prevents greedily consuming SV macro calls like `MACRO_NAME(args, `qpp`)
- *   - ' ' prevents spanning across SV ternary expressions like `true : `false
- *     (where `true and `false are Verilog macros and ' : ' would be consumed).
- * All real QPP inline expressions in this codebase are space-free
- * (e.g. `config['KEY']`, `clk`, `true`, `false`).
+/* Directive lines: ';' at column-0 followed immediately by a letter (Python
+ * keyword or identifier).  A bare ';' statement-terminator at column 0 is
+ * NOT a QPP directive — Python keywords always start with [A-Za-z_]. */
+QppDirective ^;[A-Za-z_][^\n]*
+/* Inline expressions: backtick-delimited Python subscript expression.
+ * Requires at least one '[' in the content to distinguish from SV compiler
+ * directives (`MACRO, `ifdef, etc.) which are plain identifiers.
+ * All real QPP inline expressions use Python subscript notation, e.g.
+ * `config['KEY']`, `config['KEY']-1`.
+ * '(' excluded to prevent consuming SV macro calls; content up to first
+ * unmatched backtick is greedily consumed.
  * Must be matched before MacroIdentifier to take priority. */
-QppInlineExpr `[^`\n( ]*`
+QppInlineExpr `[^`\n(\[]*\[[^`\n]*`
 
 /* Preprocessor angle-bracket `include */
 UnterminatedAngleBracketString <{StringContent}
