@@ -45,7 +45,7 @@ jobs:
         ./.github/bin/check-potential-problems.sh
 
   Check:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, compute-fabric]
     strategy:
       fail-fast: false
       matrix:
@@ -80,11 +80,7 @@ jobs:
     - name: Install Dependencies
       run: |
         set -x
-        sudo apt -qqy update
-        sudo apt -qq -y install build-essential wget git python3 python-is-python3 default-jdk cmake python3-pip ripgrep
-        sudo apt -qq -y install gcc-14 g++-14
         source ./.github/settings.sh
-        ./.github/bin/set-compiler.sh 14
         ARCH=x86_64 ./.github/bin/install-bazel.sh
 
     - name: ${{ matrix.mode }} Verible
