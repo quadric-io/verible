@@ -521,6 +521,10 @@ static const absl::node_hash_map<verilog_tokentype, FTT> &FormatTokenTypeMap() {
       // end of line comment
       {verilog_tokentype::TK_EOL_COMMENT, FTT::eol_comment},
 
+      // QPP (Quadric Python Preprocessor) constructs
+      {verilog_tokentype::TK_QPP_DIRECTIVE, FTT::qpp_directive},
+      {verilog_tokentype::TK_QPP_INLINE_EXPR, FTT::qpp_inline_expr},
+
       // TODO(fangism): {verilog_tokentype::TK_LINE_CONT, FTT::???},
   });
   return kFormatTokenMap;

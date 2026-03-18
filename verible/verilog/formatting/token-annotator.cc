@@ -772,6 +772,22 @@ static WithReason<SpacingOptions> BreakDecisionBetween(
             "line-continued)."};
   }
 
+  // QPP inline expressions are opaque atoms — no space on either side so that
+  // `config['NAME']`CoreEX remains a single concatenated identifier after
+  // QPP expansion.
+  if (left.format_token_enum == FTT::qpp_inline_expr ||
+      right.format_token_enum == FTT::qpp_inline_expr) {
+    return {SpacingOptions::kMustAppend, "QPP inline expression: no space"};
+  }
+
+  // QPP directive lines must stay at column 0 so the QPP preprocessor's '^;'
+  // pattern recognizes them after formatting.  kPreserve keeps the original
+  // newline + 0-indentation from the source file intact.
+  if (left.format_token_enum == FTT::qpp_directive ||
+      right.format_token_enum == FTT::qpp_directive) {
+    return {SpacingOptions::kPreserve, "QPP directive: preserve column-0 position"};
+  }
+
   // Check for mandatory line breaks.
   if (left.format_token_enum == FTT::eol_comment ||
       left.TokenEnum() == PP_define_body  // definition excludes trailing '\n'

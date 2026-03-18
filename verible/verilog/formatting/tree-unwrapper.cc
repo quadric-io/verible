@@ -514,6 +514,7 @@ static verible::TokenSequence::const_iterator StopAtLastNewlineBeforeTreeLeaf(
       case TK_EOL_COMMENT:
       case TK_COMMENT_BLOCK:
       case TK_ATTRIBUTE:
+      case TK_QPP_DIRECTIVE:
         ++token_iter;
         break;
       default:
@@ -1550,6 +1551,7 @@ static void AttachSeparatorToPreviousOrNextPartition(
       case verilog_tokentype::TK_COMMENT_BLOCK:
       case verilog_tokentype::TK_EOL_COMMENT:
       case verilog_tokentype::TK_ATTRIBUTE:
+      case verilog_tokentype::TK_QPP_DIRECTIVE:
         break;
       case ',':
       case ':':

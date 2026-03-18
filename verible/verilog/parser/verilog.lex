@@ -177,6 +177,19 @@ EvalStringLiteralContent ([^`]|(`[^"]))*
 UnterminatedEvalStringLiteral `\"{EvalStringLiteralContent}
 EvalStringLiteral {UnterminatedEvalStringLiteral}`\"
 
+/* QPP (Quadric Python Preprocessor) constructs */
+/* Directive lines: entire line starting with ';' is a Python statement */
+QppDirective ^;[^\n]*
+/* Inline expressions: backtick-delimited Python expression, e.g. `config['NAME']`
+ * '(' and ' ' (space) are excluded from the content:
+ *   - '(' prevents greedily consuming SV macro calls like `MACRO_NAME(args, `qpp`)
+ *   - ' ' prevents spanning across SV ternary expressions like `true : `false
+ *     (where `true and `false are Verilog macros and ' : ' would be consumed).
+ * All real QPP inline expressions in this codebase are space-free
+ * (e.g. `config['KEY']`, `clk`, `true`, `false`).
+ * Must be matched before MacroIdentifier to take priority. */
+QppInlineExpr `[^`\n( ]*`
+
 /* Preprocessor angle-bracket `include */
 UnterminatedAngleBracketString <{StringContent}
 AngleBracketInclude {UnterminatedAngleBracketString}>
@@ -260,6 +273,17 @@ PragmaEndProtected {Pragma}{Space}+protect{Space}+end_protected
   /* In ENCRYPTED state, ignore all text. */
 <ENCRYPTED>{RestOfLine}             {  UpdateLocation(); /* ignore */ }
 
+
+  /* QPP directive lines: must be matched before any other rule since ';' is
+   * also a valid SV token.  The '^' anchor ensures this only fires at
+   * line-start.  The entire line (excluding the terminating newline, which is
+   * returned to the input stream) is consumed as an opaque atom. */
+{QppDirective} { UpdateLocation(); return TK_QPP_DIRECTIVE; }
+
+  /* QPP inline expressions: backtick-delimited Python expressions that expand
+   * to SV identifiers/values.  Must precede MacroIdentifier so the greedy
+   * matched-backtick rule wins over the single-backtick SV macro rule. */
+{QppInlineExpr} { UpdateLocation(); return TK_QPP_INLINE_EXPR; }
 
 {TraditionalComment} {
   UpdateLocation();
