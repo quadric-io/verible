@@ -163,7 +163,7 @@ jobs:
         cd verible/verilog/tools/ls/vscode
         npm install
         npm install -g @vscode/vsce
-        VERSION=$(git describe --tags --always | sed 's|v\([^-]\+\)-\([[:digit:]]\+\).*|\1.\2|;s|^[^0-9].*|0.0-dev|')
+        VERSION=$(git describe --tags --always | sed 's|v\([^-]\+\)-\([[:digit:]]\+\).*|\1.\2|;s|^[^0-9].*|0.0.0|')
         TAG=$(git describe --tags --always --match=v* 2>/dev/null || git rev-parse --short HEAD)
         sed -i 's|\(.*version.*\): "\([^"]\+\)"|\1: "'${VERSION}'"|g' package.json
         sed -i 's|\(.*tag.*\): "\([^"]\+\)"|\1: "'${TAG}'"|g' package.json
