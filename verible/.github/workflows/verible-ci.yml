@@ -1,0 +1,183 @@
+name: ci
+
+on:
+  push:
+    branches:
+    - master
+    - main
+  pull_request:
+    branches:
+    - master
+    - main
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEBIAN_FRONTEND: "noninteractive"
+  VERIBLE_BINDIR: "/tmp/verible-bin"
+
+jobs:
+
+  CheckFormatAndBuildClean:
+    runs-on: ubuntu-24.04
+    steps:
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install Dependencies
+      run: |
+        go install github.com/bazelbuild/buildtools/buildifier@latest
+        echo "PATH=$PATH:$(go env GOPATH)/bin/" >> $GITHUB_ENV
+
+    - name: Run formatting style check
+      run: |
+        echo "--- check formatting ---"
+        CLANG_FORMAT=clang-format-17 ./.github/bin/run-format.sh --show-diff
+        echo "--- check build dependencies ---"
+        ./.github/bin/run-build-cleaner.sh
+        echo "--- check potential problems ---"
+        ./.github/bin/check-potential-problems.sh
+
+  Check:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+        - test
+        - compile-static
+    env:
+      MODE: ${{ matrix.mode }}
+      ARCH: x86_64
+    name: linux ${{ matrix.mode }}
+
+    steps:
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Create Cache Timestamp
+      id: cache_timestamp
+      uses: nanzm/get-time-action@v2.0
+      with:
+        format: 'YYYY-MM-DD-HH-mm-ss'
+
+    - name: Mount bazel cache
+      uses: actions/cache@v3
+      with:
+        path: "~/.cache/bazel"
+        key: bazelcache_x86_64_${{ matrix.mode }}_${{ steps.cache_timestamp.outputs.time }}
+        restore-keys: bazelcache_x86_64_${{ matrix.mode }}_
+
+    - name: Install Dependencies
+      run: |
+        set -x
+        sudo apt -qqy update
+        sudo apt -qq -y install build-essential wget git python3 python-is-python3 default-jdk cmake python3-pip ripgrep
+        sudo apt -qq -y install gcc-14 g++-14
+        source ./.github/settings.sh
+        ./.github/bin/set-compiler.sh 14
+        ARCH=x86_64 ./.github/bin/install-bazel.sh
+
+    - name: ${{ matrix.mode }} Verible
+      run: ./.github/bin/build-and-test.sh
+
+    - name: Pack up static binaries
+      if: matrix.mode == 'compile-static'
+      run: |
+        VERSION=$(git describe --match=v*)
+        .github/bin/simple-install.sh verible-${VERSION}/bin
+        tar cvzf verible-${VERSION}-linux-static-x86_64.tar.gz verible-${VERSION}
+
+    - name: 📤 Upload static binary artifact
+      if: matrix.mode == 'compile-static'
+      uses: actions/upload-artifact@v4
+      with:
+        name: verible-install-linux-static
+        path: verible-*.tar.gz
+
+  MacOsBuild:
+    runs-on: macos-latest
+    steps:
+
+    - name: Install Dependencies
+      run: |
+        echo "USE_BAZEL_VERSION=7.6.1" >> $GITHUB_ENV
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Create Cache Timestamp
+      id: cache_timestamp
+      uses: nanzm/get-time-action@v2.0
+      with:
+        format: 'YYYY-MM-DD-HH-mm-ss'
+
+    - name: Mount bazel cache
+      uses: actions/cache@v3
+      with:
+        path: |
+          /private/var/tmp/_bazel_runner
+        key: bazelcache_macos_${{ steps.cache_timestamp.outputs.time }}
+        restore-keys: bazelcache_macos_
+
+    - name: Tests
+      # MacOS has a broken patch utility that causes lint-tool_test to fail
+      run: bazel test -c opt --noshow_progress --test_output=errors --cxxopt=-Wno-range-loop-analysis -- //... -//verible/verilog/tools/lint:lint-tool_test
+
+    - name: Build
+      run: |
+        bazel build -c opt --noshow_progress --cxxopt=-Wno-range-loop-analysis :install-binaries
+        bazel-bin/verible/verilog/tools/syntax/verible-verilog-syntax --version
+
+    - name: Pack up
+      run: |
+        VERSION=$(git describe --match=v*)
+        .github/bin/simple-install.sh verible-${VERSION}-macOS/bin
+        tar cvzf verible-${VERSION}-macOS.tar.gz verible-${VERSION}-macOS
+
+    - name: 📤 Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: verible-install-macos
+        path: verible-*.tar.gz
+
+  VSPluginBuild:
+    runs-on: ubuntu-24.04
+    steps:
+
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install Dependencies
+      run: |
+        sudo apt -qqy update
+        sudo apt -qq -y install npm nodejs
+
+    - name: Build VS Code extension
+      run: |
+        cd verible/verilog/tools/ls/vscode
+        npm install
+        npm install -g @vscode/vsce
+        VERSION=$(git describe | sed 's|v\([^-]\+\)-\([[:digit:]]\+\).*|\1.\2|')
+        TAG=$(git describe --match=v*)
+        sed -i 's|\(.*version.*\): "\([^"]\+\)"|\1: "'${VERSION}'"|g' package.json
+        sed -i 's|\(.*tag.*\): "\([^"]\+\)"|\1: "'${TAG}'"|g' package.json
+        vsce package
+
+    - name: 📤 Upload vsix artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: verible-vscode-extension
+        path: verible/verilog/tools/ls/vscode/*.vsix
