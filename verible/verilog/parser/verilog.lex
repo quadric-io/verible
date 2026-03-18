@@ -178,10 +178,6 @@ UnterminatedEvalStringLiteral `\"{EvalStringLiteralContent}
 EvalStringLiteral {UnterminatedEvalStringLiteral}`\"
 
 /* QPP (Quadric Python Preprocessor) constructs */
-/* Directive lines: ';' at column-0 followed immediately by a letter (Python
- * keyword or identifier).  A bare ';' statement-terminator at column 0 is
- * NOT a QPP directive — Python keywords always start with [A-Za-z_]. */
-QppDirective ^;[A-Za-z_][^\n]*
 /* Inline expressions: backtick-delimited Python subscript expression.
  * Requires at least one '[' in the content to distinguish from SV compiler
  * directives (`MACRO, `ifdef, etc.) which are plain identifiers.
@@ -276,11 +272,20 @@ PragmaEndProtected {Pragma}{Space}+protect{Space}+end_protected
 <ENCRYPTED>{RestOfLine}             {  UpdateLocation(); /* ignore */ }
 
 
-  /* QPP directive lines: must be matched before any other rule since ';' is
-   * also a valid SV token.  The '^' anchor ensures this only fires at
-   * line-start.  The entire line (excluding the terminating newline, which is
-   * returned to the input stream) is consumed as an opaque atom. */
-{QppDirective} { UpdateLocation(); return TK_QPP_DIRECTIVE; }
+  /* SV end-keywords at BOL after an empty statement (e.g. ';endtask',
+   * ';end endfunction') must not be consumed as QPP directives.  Python has no
+   * 'end*' or 'join*' keywords, so this exclusion rule fires first on ties. */
+<INITIAL>^;(end[a-z_]*|join[a-z_]*)[^\n]*\n? { yyless(1); UpdateLocation(); return ';'; }
+
+  /* QPP directive lines start with ';' at column 0.  Three cases:
+   *   1. ';#...' — Python comment line.
+   *   2. ';identifier SEP...' — Python statement where SEP is whitespace, ':'
+   *      or '=' (avoids consuming ';a<=b' which is an SV non-blocking assign).
+   *   3. ';identifier$' — keyword alone at end-of-line (e.g. ';pass').
+   * All three consume to end-of-line; the newline token is emitted next. */
+<INITIAL>^;#[^\n]* { UpdateLocation(); return TK_QPP_DIRECTIVE; }
+<INITIAL>^;[A-Za-z_][A-Za-z0-9_]*[ \t:=][^\n]* { UpdateLocation(); return TK_QPP_DIRECTIVE; }
+<INITIAL>^;[A-Za-z_][A-Za-z0-9_]*$ { UpdateLocation(); return TK_QPP_DIRECTIVE; }
 
   /* QPP inline expressions: backtick-delimited Python expressions that expand
    * to SV identifiers/values.  Must precede MacroIdentifier so the greedy
@@ -1541,8 +1546,17 @@ zi_zp { UpdateLocation(); return TK_zi_zp; }
   /* To prevent matching other `directives, this pattern must appear last. */
 {MacroIdentifier} {
   /* If this text runs up to an EOF, handle it here,
-   * rather than enter other state.  Fixes b/37984133.  */
-  if (YY_CURRENT_BUFFER->yy_buffer_status == YY_BUFFER_EOF_PENDING) {
+   * rather than enter other state.  Fixes b/37984133.
+   *
+   * Note: YY_BUFFER_EOF_PENDING is set as soon as the input stream is
+   * exhausted, even if the buffer still has unconsumed characters.  We
+   * must also confirm that yy_c_buf_p is at the end-of-buffer sentinel
+   * before taking this early-return path; otherwise short inputs (where
+   * the entire input fits in one buffer read) would incorrectly skip the
+   * POST_MACRO_ID state for tokens like `MACRO'd or `MACRO'h.
+   */
+  if (YY_CURRENT_BUFFER->yy_buffer_status == YY_BUFFER_EOF_PENDING &&
+      yy_hold_char == YY_END_OF_BUFFER_CHAR) {
     UpdateLocation();
     return MacroIdentifier;
   }
