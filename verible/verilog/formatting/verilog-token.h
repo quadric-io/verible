@@ -34,10 +34,10 @@ enum FormatTokenType {
   close_group,  // ) } ]
   hierarchy,    // :: .
   edge_descriptor,
-  comment_block,  // /*comment*/
-  eol_comment,    // // comment
-  qpp_directive,   // ;python statement (QPP line directive)
-  qpp_inline_expr, // `python_expr` (QPP inline expression)
+  comment_block,    // /*comment*/
+  eol_comment,      // // comment
+  qpp_directive,    // ;python statement (QPP line directive)
+  qpp_inline_expr,  // `python_expr` (QPP inline expression)
 };
 
 // Converts a leaf token enum into a FormatTokenType enum for categorizing

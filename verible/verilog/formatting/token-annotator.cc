@@ -785,7 +785,8 @@ static WithReason<SpacingOptions> BreakDecisionBetween(
   // newline + 0-indentation from the source file intact.
   if (left.format_token_enum == FTT::qpp_directive ||
       right.format_token_enum == FTT::qpp_directive) {
-    return {SpacingOptions::kPreserve, "QPP directive: preserve column-0 position"};
+    return {SpacingOptions::kPreserve,
+            "QPP directive: preserve column-0 position"};
   }
 
   // Check for mandatory line breaks.
