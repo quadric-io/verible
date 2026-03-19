@@ -671,6 +671,10 @@ is not locally defined, so the grammar here uses only generic identifiers.
 %token TK_LINE_CONT "<<\\line-cont>>"
 %token TK_ATTRIBUTE "(*attribute*)"
 
+/* QPP (Quadric Python Preprocessor) tokens — treated as opaque pass-throughs */
+%token TK_QPP_DIRECTIVE "<<qpp-directive>>"
+%token TK_QPP_INLINE_EXPR "<<qpp-inline-expr>>"
+
 %token TK_FILEPATH "<<filepath>>"
 
 /* hack: artificial markers to switch to a different syntax mode */

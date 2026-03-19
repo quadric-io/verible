@@ -177,6 +177,42 @@ EvalStringLiteralContent ([^`]|(`[^"]))*
 UnterminatedEvalStringLiteral `\"{EvalStringLiteralContent}
 EvalStringLiteral {UnterminatedEvalStringLiteral}`\"
 
+/* QPP (Quadric Python Preprocessor) constructs */
+/* Inline expressions: backtick-delimited Python subscript expression.
+ * Requires at least one '[' in the content to distinguish from SV compiler
+ * directives (`MACRO, `ifdef, etc.) which are plain identifiers.
+ * All real QPP inline expressions use Python subscript notation, e.g.
+ * `config['KEY']`, `config['KEY']-1`.
+ * '(' excluded to prevent consuming SV macro calls; content up to first
+ * unmatched backtick is greedily consumed.
+ * Must be matched before MacroIdentifier to take priority.
+ *
+ * Design note — two-layer QPP inline expression handling:
+ *
+ * TK_QPP_INLINE_EXPR (this rule) is the lexer-level mechanism.  Tokens are
+ * filtered from the syntax tree by KeepSyntaxTreeTokens and treated as opaque
+ * atoms, preserving original text without a restore step.  This protects all
+ * non-formatter Verible tools (linter, syntax tree viewer, equivalence
+ * checker, etc.) that lex QPP files directly and produce structured output
+ * (diagnostics, token text) where a substitute/restore cycle is impractical.
+ *
+ * The formatter uses a separate pre/post substitution mechanism
+ * (SubstituteQppInlineExprs / RestoreQppInlineExprs in formatter.cc) that
+ * covers both subscript-form and bare-identifier forms (`ident`).  With
+ * substitution, backtick patterns are gone before the lexer runs, so this
+ * rule never fires for formatter input.  The formatter does NOT rely on
+ * TK_QPP_INLINE_EXPR; it is retained solely for the non-formatter tools
+ * described above.
+ *
+ * Bare-identifier forms (`clk`, `rst_n`, etc.) are intentionally NOT matched
+ * here.  Filtering them from the syntax tree would remove tokens from
+ * positions like `always @(posedge `clk`)`, leaving invalid SV and causing
+ * cascading parse failures in non-formatter tools. */
+QppInlineExpr `[^`\n(\[]*\[[^`\n]*`
+/* QPP nested-directive indentation: 0 or more groups of 4 literal spaces,
+ * matching Python's 4-space indentation convention. */
+QppIndent ("    ")*
+
 /* Preprocessor angle-bracket `include */
 UnterminatedAngleBracketString <{StringContent}
 AngleBracketInclude {UnterminatedAngleBracketString}>
@@ -260,6 +296,32 @@ PragmaEndProtected {Pragma}{Space}+protect{Space}+end_protected
   /* In ENCRYPTED state, ignore all text. */
 <ENCRYPTED>{RestOfLine}             {  UpdateLocation(); /* ignore */ }
 
+
+  /* SV end-keywords at BOL after an empty statement (e.g. ';endtask',
+   * ';end endfunction') must not be consumed as QPP directives.  Python has no
+   * 'end*' or 'join*' keywords, so this exclusion rule fires first on ties.
+   * Optional 4-space indentation handles the ';    end...' variant (nested). */
+<INITIAL>^;{QppIndent}(end[a-z_]*|join[a-z_]*)[^\n]*\n? { yyless(1); UpdateLocation(); return ';'; }
+
+  /* QPP directive lines: ';' at column 0, with optional Python indentation
+   * expressed as multiples of 4 spaces ({QppIndent}; matches Python's
+   * standard 4-space indent), then the Python statement.  Three cases:
+   *   1. ';{QppIndent}#...' — Python comment.
+   *   2. ';{QppIndent}identifier SEP...' — Python statement where SEP is
+   *      whitespace, ':' or '=' (avoids matching ';a<=b', SV non-blocking
+   *      assign, which has no such separator after the identifier).
+   *   3. ';{QppIndent}identifier$' — keyword alone at EOL (e.g. ';    pass').
+   * Using {QppIndent} (multiples of 4 spaces) rather than [ \t]* prevents
+   * false-positive matches on SV semicolons at BOL like '; bit [N:0] x'.
+   * All three consume to end-of-line; the newline token is emitted next. */
+<INITIAL>^;{QppIndent}#[^\n]* { UpdateLocation(); return TK_QPP_DIRECTIVE; }
+<INITIAL>^;{QppIndent}[A-Za-z_][A-Za-z0-9_]*[ \t:=][^\n]* { UpdateLocation(); return TK_QPP_DIRECTIVE; }
+<INITIAL>^;{QppIndent}[A-Za-z_][A-Za-z0-9_]*$ { UpdateLocation(); return TK_QPP_DIRECTIVE; }
+
+  /* QPP inline expressions: backtick-delimited Python expressions that expand
+   * to SV identifiers/values.  Must precede MacroIdentifier so the greedy
+   * matched-backtick rule wins over the single-backtick SV macro rule. */
+{QppInlineExpr} { UpdateLocation(); return TK_QPP_INLINE_EXPR; }
 
 {TraditionalComment} {
   UpdateLocation();
@@ -1515,8 +1577,17 @@ zi_zp { UpdateLocation(); return TK_zi_zp; }
   /* To prevent matching other `directives, this pattern must appear last. */
 {MacroIdentifier} {
   /* If this text runs up to an EOF, handle it here,
-   * rather than enter other state.  Fixes b/37984133.  */
-  if (YY_CURRENT_BUFFER->yy_buffer_status == YY_BUFFER_EOF_PENDING) {
+   * rather than enter other state.  Fixes b/37984133.
+   *
+   * Note: YY_BUFFER_EOF_PENDING is set as soon as the input stream is
+   * exhausted, even if the buffer still has unconsumed characters.  We
+   * must also confirm that yy_c_buf_p is at the end-of-buffer sentinel
+   * before taking this early-return path; otherwise short inputs (where
+   * the entire input fits in one buffer read) would incorrectly skip the
+   * POST_MACRO_ID state for tokens like `MACRO'd or `MACRO'h.
+   */
+  if (YY_CURRENT_BUFFER->yy_buffer_status == YY_BUFFER_EOF_PENDING &&
+      yy_hold_char == YY_END_OF_BUFFER_CHAR) {
     UpdateLocation();
     return MacroIdentifier;
   }

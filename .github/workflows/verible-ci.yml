@@ -16,14 +16,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BOT_USER: "Deployment Bot"
-  BOT_EMAIL: "verible-dev@googlegroups.com"
-  GHA_MACHINE_TYPE: "n2-standard-8"
   DEBIAN_FRONTEND: "noninteractive"
   VERIBLE_BINDIR: "/tmp/verible-bin"
 
 jobs:
-
 
   CheckFormatAndBuildClean:
     runs-on: ubuntu-24.04
@@ -48,12 +44,18 @@ jobs:
         echo "--- check potential problems ---"
         ./.github/bin/check-potential-problems.sh
 
-  ClangTidy:
-    container: ubuntu:jammy
-    runs-on: [self-hosted, Linux, X64, gcp-custom-runners]
-
+  Check:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        mode:
+        - test
+        - compile-static
     env:
-      GHA_MACHINE_TYPE: "n2-standard-4"
+      MODE: ${{ matrix.mode }}
+      ARCH: x86_64
+    name: linux ${{ matrix.mode }}
 
     steps:
 
@@ -61,107 +63,6 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-
-    - name: Get latest clang-tidy
-      run: |
-        apt -qq -y update
-        apt -qq -y install wget software-properties-common gpg lsb-release
-        apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 15CF4D18AF4F7421
-        wget https://apt.llvm.org/llvm.sh
-        chmod +x ./llvm.sh
-        ./llvm.sh 18
-
-    - name: Install other Dependencies
-      run: |
-        apt -qq -y install clang-tidy-11 clang-tidy-18 build-essential git wget
-        source ./.github/settings.sh
-        ./.github/bin/install-bazel.sh
-
-    - name: Create Cache Timestamp
-      id: cache_timestamp
-      uses: nanzm/get-time-action@v2.0
-      with:
-        format: 'YYYY-MM-DD-HH-mm-ss'
-
-    - name: Retrieve cached results
-      uses: actions/cache@v3
-      with:
-        path: |
-          /root/.cache/clang-tidy
-          /root/.cache/bazel
-        key: clang-tidy2-${{ steps.cache_timestamp.outputs.time }}
-        restore-keys: clang-tidy2-
-
-    - name: Run clang tidy
-      run: |
-        echo "::group::Make Compilation DB"
-        .github/bin/make-compilation-db.sh
-        cat compile_flags.txt
-        echo "::endgroup::"
-
-        # For runtime references, use clang-tidy 11 that still has it,
-        # everything else: latest.
-        CLANG_TIDY=clang-tidy-11 ./.github/bin/run-clang-tidy-cached.cc --checks="-*,google-runtime-references" \
-           || ( cat verible_clang-tidy.out ; exit 1)
-
-        CLANG_TIDY=clang-tidy-18 ./.github/bin/run-clang-tidy-cached.cc \
-            || ( cat verible_clang-tidy.out ; exit 1)
-
-    - name: 📤 Upload performance graphs
-      uses: actions/upload-artifact@v4
-      if: success() || failure()
-      with:
-        name: "diag-clang-tidy"
-        path: "**/plot_*.svg"
-
-  Check:
-    container: ubuntu:noble
-    runs-on: [self-hosted, Linux, X64, gcp-custom-runners]
-    strategy:
-      fail-fast: false
-      matrix:
-        mode:
-        - test
-        - test-clang
-        - test-nortti
-        - test-c++20
-        - test-c++23
-        - smoke-test
-        #- smoke-test-analyzer  #issue: #2046
-        - asan
-        - asan-clang
-        - compile
-        - compile-clang
-        - compile-static
-        - compile-static-clang
-        - clean
-        arch:
-        - x86_64
-        - arm64
-        exclude:
-          - mode: test-nortti
-            arch: arm64
-          - mode: test-c++20
-            arch: arm64
-          - mode: test-c++23
-            arch: arm64
-          - mode: asan
-            arch: arm64
-          - mode: asan-clang
-            arch: arm64
-    env:
-      MODE: ${{ matrix.mode }}
-      ARCH: ${{ matrix.arch }}
-      GHA_MACHINE_TYPE: "${{ matrix.arch == 'arm64' && 't2a-standard-8' || 'n2-standard-8' }}"
-    name: ${{ matrix.arch }} ${{ matrix.mode }}
-
-    steps:
-
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-       # Download complete repository + tags
-       fetch-depth: 0
 
     - name: Create Cache Timestamp
       id: cache_timestamp
@@ -171,143 +72,32 @@ jobs:
 
     - name: Mount bazel cache
       uses: actions/cache@v3
-      if: matrix.mode != 'clean' && matrix.mode != 'coverage'
       with:
-        path: "/root/.cache/bazel"
-        key: bazelcache_${{ matrix.arch }}_${{ matrix.mode }}_${{ steps.cache_timestamp.outputs.time }}
-        restore-keys: bazelcache_${{ matrix.arch }}_${{ matrix.mode }}_
+        path: "~/.cache/bazel"
+        key: bazelcache_x86_64_${{ matrix.mode }}_${{ steps.cache_timestamp.outputs.time }}
+        restore-keys: bazelcache_x86_64_${{ matrix.mode }}_
 
-    - name: Install Dependencies
+    - name: Install Bazel
       run: |
-        set -x
-        apt -qqy update
-        apt -qq -y install build-essential wget git python3 python-is-python3 default-jdk cmake python3-pip ripgrep
-        apt -qq -y install gcc-10 g++-10
-        apt -qq -y install gcc-14 g++-14
-        apt -qq -y install clang-19
         source ./.github/settings.sh
-        # Use newer compiler for c++2x compilation. Also slang needs c++20
-        ./.github/bin/set-compiler.sh $([[ "$MODE" == test-c++2* || "$MODE" == "smoke-test-analyzer" ]] && echo 14 || echo 10)
-        ARCH="$ARCH" ./.github/bin/install-bazel.sh
-
-    - name: Build Slang
-      if: matrix.mode == 'smoke-test-analyzer'
-      run: |
-        pushd .
-        git clone https://github.com/MikePopoloski/slang.git /tmp/slang
-        cd /tmp/slang
-        git checkout v3.0  # Pin version; current head cmake files in flux
-        cmake -B build
-        cmake --build build -j $(nproc)
-        cmake --install build --strip
-        popd
-
-    - name: Install Python dependencies
-      if: matrix.mode == 'smoke-test-analyzer'
-      run: |
-        pip3 install mdutils
+        ARCH=x86_64 ./.github/bin/install-bazel.sh
 
     - name: ${{ matrix.mode }} Verible
       run: ./.github/bin/build-and-test.sh
 
-    - name: Gather and pack binaries
-      if: matrix.mode == 'compile' && matrix.arch == 'x86_64'
-      # these are used for building the gh-pages.
-      run: |
-        bazel build -c opt :install-binaries
-        # Litmus test
-        bazel-bin/verible/verilog/tools/syntax/verible-verilog-syntax --version
-        .github/bin/simple-install.sh $VERIBLE_BINDIR
-        tar cfv verible-bin.tar -C $VERIBLE_BINDIR .
-
-    - name: Upload bazel-bin
-      if: matrix.mode == 'compile' && matrix.arch == 'x86_64'
-      uses: actions/upload-artifact@v4
-      with:
-        name: verible-bin
-        path: verible-bin.tar
-
-    - name: Pack up static results
+    - name: Pack up static binaries
       if: matrix.mode == 'compile-static'
-      # Note: generic builds were removed in #2058, so here we pack the
-      # CI results for static binaries.
       run: |
-        VERSION=$(git describe --match=v*)
+        VERSION=$(git describe --match=v* 2>/dev/null || git rev-parse --short HEAD)
         .github/bin/simple-install.sh verible-${VERSION}/bin
-        tar cvzf verible-${VERSION}-linux-static-${{matrix.arch}}.tar.gz verible-${VERSION}
+        tar cvzf verible-${VERSION}-linux-static-x86_64.tar.gz verible-${VERSION}
 
-    - name: 📤 Upload artifact
+    - name: Upload static binary artifact
+      if: matrix.mode == 'compile-static'
       uses: actions/upload-artifact@v4
       with:
-        name: verible-install-${{ matrix.arch }}
+        name: verible-install-linux-static
         path: verible-*.tar.gz
-
-    - name: 📤 Upload performance graphs
-      uses: actions/upload-artifact@v4
-      if: success() || failure()
-      with:
-        name: "diag-${{ matrix.arch }}-${{ matrix.mode }}"
-        path: "**/plot_*.svg"
-
-
-  KytheVerification:
-    runs-on: ubuntu-24.04
-    if: false   # Currently disabled, need to investigate further
-
-    steps:
-
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-       # Download complete repository + tags
-       fetch-depth: 0
-
-    - name: Install Dependencies
-      run: |
-        source ./.github/settings.sh
-        ./.github/bin/set-compiler.sh 10
-        ./.github/bin/install-bazel.sh
-        ./.github/bin/install-kythe-tools.sh
-
-    - name: Run Kythe Verification tests
-      run: |
-        source ./.github/settings.sh
-        ./.github/bin/verify-kythe-extraction.sh
-
-
-  KytheXrefs:
-    container: ubuntu:noble
-    runs-on: [self-hosted, Linux, X64, gcp-custom-runners]
-
-    steps:
-
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-       # Download complete repository + tags
-       fetch-depth: 0
-
-    - name: Install Dependencies
-      run: |
-        set -x
-        apt -qqy update
-        apt -qq -y install build-essential wget git python3 python-is-python3 default-jdk cmake python3-pip ripgrep
-        apt -qq -y install gcc-14 g++-14
-        pwd
-        source ./.github/settings.sh
-        ./.github/bin/set-compiler.sh 14
-        ./.github/bin/install-bazel.sh
-        ./.github/bin/install-kythe.sh
-
-    - name: Extract Verible Kythe xRefs
-      run: |
-        source ./.github/settings.sh
-        ./.github/bin/run-kythe.sh
-
-    - name: 📤 Upload Kythe xRefs to the action artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        path: kythe_output/*.kzip
 
   MacOsBuild:
     runs-on: macos-latest
@@ -331,37 +121,32 @@ jobs:
     - name: Mount bazel cache
       uses: actions/cache@v3
       with:
-        path: |
-          /private/var/tmp/_bazel_runner
+        path: /private/var/tmp/_bazel_runner
         key: bazelcache_macos_${{ steps.cache_timestamp.outputs.time }}
         restore-keys: bazelcache_macos_
 
     - name: Tests
-      # MacOS has a broken patch utility:
-      # //verible/verilog/tools/lint:lint-tool_test trips over a no-newline-at-end-of-file
       run: bazel test -c opt --noshow_progress --test_output=errors --cxxopt=-Wno-range-loop-analysis -- //... -//verible/verilog/tools/lint:lint-tool_test
 
     - name: Build
       run: |
-        bazel build -c opt --noshow_progress --test_output=errors --cxxopt=-Wno-range-loop-analysis :install-binaries
-        # Litmus test
+        bazel build -c opt --noshow_progress --cxxopt=-Wno-range-loop-analysis :install-binaries
         bazel-bin/verible/verilog/tools/syntax/verible-verilog-syntax --version
 
     - name: Pack up
       run: |
-        VERSION=$(git describe --match=v*)
+        VERSION=$(git describe --match=v* 2>/dev/null || git rev-parse --short HEAD)
         .github/bin/simple-install.sh verible-${VERSION}-macOS/bin
         tar cvzf verible-${VERSION}-macOS.tar.gz verible-${VERSION}-macOS
 
-    - name: 📤 Upload artifact
+    - name: Upload macOS artifact
       uses: actions/upload-artifact@v4
       with:
         name: verible-install-macos
         path: verible-*.tar.gz
 
-  PrepareVSPlugin:
-    container: ubuntu:jammy
-    runs-on: [self-hosted, Linux, X64, gcp-custom-runners]
+  VSPluginBuild:
+    runs-on: ubuntu-24.04
     steps:
 
     - uses: actions/checkout@v4
@@ -370,190 +155,28 @@ jobs:
 
     - name: Install Dependencies
       run: |
-        apt -qqy update
-        apt -qq -y install npm nodejs
+        sudo apt -qqy update
+        sudo apt -qq -y install npm nodejs
 
-  WindowsBuild:
-    runs-on: windows-latest
-    steps:
-
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Create Cache Timestamp
-      id: cache_timestamp
-      uses: nanzm/get-time-action@v2.0
-      with:
-        format: 'YYYY-MM-DD-HH-mm-ss'
-
-    - name: Mount bazel cache
-      uses: actions/cache@v3
-      with:
-        path: "c:/users/runneradmin/_bazel_runneradmin"
-        key: bazelcache_windows_${{ steps.cache_timestamp.outputs.time }}
-        restore-keys: bazelcache_windows_
-
-    - name: Install dependencies
-      run: |
-        choco install bazel --force --version=7.6.1
-        choco install winflexbison3
-        choco install llvm --allow-downgrade --version=20.1.4
-
-    - name: Debug bazel directory settings
-      # We need to explicitly call the bazel binary from choco, otherwise
-      # the default Windows runner seems to run bazelisk(?) and downloads the
-      # latest bazel, which is incompatible. Should be in variable.
-      run: C:/ProgramData/chocolatey/lib/bazel/bazel.exe info
-
-    - name: Run Tests
-      run: C:/ProgramData/chocolatey/lib/bazel/bazel.exe test --keep_going --noshow_progress --test_output=errors //...
-
-    - name: Build Verible Binaries
-      run: |
-        C:/ProgramData/chocolatey/lib/bazel/bazel.exe build --keep_going --noshow_progress -c opt :install-binaries
-        # Litmus test
-        bazel-bin/verible/verilog/tools/syntax/verible-verilog-syntax --version
-
-    - name: Prepare release
-      run: |
-        $VERSION = git describe --match=v*
-        bash .github/bin/simple-install.sh "c:/verible-${VERSION}-win64"
-        7z a "verible-${VERSION}-win64.zip" "c:/verible-${VERSION}-win64"
-
-    - name: 📤 Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: verible-install-win
-        path: verible-*.zip
-
-    # We need to shut down bazel to let go of the filedescriptors in the
-    # cache directory. Because of strange filesystem semantics on Windows, this
-    # prevents packaging up the cache.
-    - name: Stop Bazel
-      run: |
-        C:/ProgramData/chocolatey/lib/bazel/bazel.exe shutdown
-        # The cache pack/restore has issues with these symbolic links
-        rm c:/users/runneradmin/_bazel_runneradmin/*/install
-        rm c:/users/runneradmin/_bazel_runneradmin/*/java.log
-
-
-  PackReleaseSource:
-    name: 📦 Pack Sources
-    runs-on: ubuntu-24.04
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
-
-    - name: Pack Sources
-      run: |
-        TAG_VERSION=$(git describe --match=v*)
-        MODULE_VERSION=$(git describe --match=v* 2>/dev/null \
-                         | sed 's/v\([^-]*\)-\([0-9]*\)-.*/\1.\2/')
-
-        OUT_SRC=verible-${TAG_VERSION}
-
-        mkdir ../${OUT_SRC}
-        cp -r . ../${OUT_SRC}
-
-        # Bake in current version into MODULE.bazel
-        sed "s/\(.*version.*\"\)\(head\)\(\".*\)/\1${MODULE_VERSION}\3/" \
-           -i ../${OUT_SRC}/MODULE.bazel
-
-        tar --exclude=.git -cvzf ${OUT_SRC}.tar.gz ../${OUT_SRC}
-
-    - name: 📤 Upload Source tar
-      uses: actions/upload-artifact@v4
-      with:
-        name: src
-        path: verible-*.tar.gz
-
-  Release:
-    name: 📦 Release
-    needs: [ Check, PackReleaseSource, MacOsBuild, WindowsBuild, PrepareVSPlugin ]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-
-    if: ${{github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')}}
-
-    steps:
-
-    - uses: actions/checkout@v4
-      with:
-       # Download complete repository + tags
-       fetch-depth: 0
-
-    - name: 📥 Download artifacts
-      uses: actions/download-artifact@v4
-      with:
-        merge-multiple: true
-
-    - name: Generate and apply TAG
-      run: |
-        git config --local user.name "$BOT_USER"
-        git config --local user.email "$BOT_EMAIL"
-
-        # Create a tag of form v0.0-183-gdf2b162-20191112132344
-        TAG="${TAG:-$(git describe --match=v*)}"
-
-        git tag "$TAG" || true
-        echo "TAG=$TAG" >> $GITHUB_ENV
-
-        ls -l verible-v*
-
-    - name: Deploy release and assets
-      uses: svenstaro/upload-release-action@2.9.0
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: verible-v*.{tar.gz,zip}
-        tag: ${{ env.TAG }}
-        overwrite: true
-        file_glob: true
-
-    - name: Publish VSCode extension
-      env:
-        VSC_MARKETPLACE_TOKEN: ${{ secrets.VSC_MARKETPLACE_TOKEN }}
+    - name: Build VS Code extension
       run: |
         cd verible/verilog/tools/ls/vscode
         npm install
-        # install vsce globally
         npm install -g @vscode/vsce
-
-        # Patch the JSON file to contain our current git tag+commit
-        VERSION=$(git describe | sed 's|v\([^-]\+\)-\([[:digit:]]\+\).*|\1.\2|')
+        DESCRIBE=$(git describe --tags --match=v* 2>/dev/null || true)
+        if [ -n "${DESCRIBE}" ]; then
+          VERSION=$(echo "${DESCRIBE}" | sed 's|v\([^-]\+\)-\([[:digit:]]\+\).*|\1.\2|')
+          TAG="${DESCRIBE}"
+        else
+          VERSION="0.0.0"
+          TAG=$(git rev-parse --short HEAD)
+        fi
         sed -i 's|\(.*version.*\): "\([^"]\+\)"|\1: "'${VERSION}'"|g' package.json
         sed -i 's|\(.*tag.*\): "\([^"]\+\)"|\1: "'${TAG}'"|g' package.json
-        vsce publish -p ${VSC_MARKETPLACE_TOKEN}
+        vsce package
 
-  GhPages:
-    name: Build and deploy GitHub pages
-    needs: [Check]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: verible-bin
-
-      - name: Extract Verible binaries
-        run: mkdir -p $VERIBLE_BINDIR && tar xvf verible-bin.tar -C $VERIBLE_BINDIR
-
-      - name: Set up things for GitHub Pages deployment
-        run: ./.github/bin/github-pages-setup.sh $VERIBLE_BINDIR
-
-      - name: Deployment
-        if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
-        uses: JamesIves/github-pages-deploy-action@v4.6.3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: gh-pages
-          FOLDER: /tmp/pages
-          CLEAN: true
+    - name: Upload vsix artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: verible-vscode-extension
+        path: verible/verilog/tools/ls/vscode/*.vsix

@@ -273,34 +273,140 @@ absl::Status FormatVerilog(const verible::TextStructureView &text_structure,
   return format_status;
 }
 
+// Replaces QPP inline expressions with stable placeholder identifiers so the
+// SV parser processes the surrounding code cleanly.  Two forms are handled:
+//
+//   Bare-ident:   `ident`          — backtick + identifier + backtick
+//   Subscript:    `config['KEY']`  — backtick + content-with-[ + backtick
+//
+// Both forms are detected by scanning for a closing backtick on the same line.
+// The content between backticks determines which form:
+//   - Pure identifier chars only → bare-ident
+//   - Contains '[' with no '(' before it → subscript (mirrors QppInlineExpr)
+//
+// SV compiler directives (`define, `ifdef, ...) have no closing backtick on
+// the same line and are left untouched.
+//
+// Placeholders (__qpp_N__) are valid SV identifiers and format stably, so
+// convergence checking operates correctly on the substituted text.
+//
+// Design note: the lexer also recognises subscript-form inline exprs via the
+// QppInlineExpr rule, producing TK_QPP_INLINE_EXPR tokens that are filtered
+// from the syntax tree by KeepSyntaxTreeTokens.  That mechanism is retained
+// for non-formatter Verible tools (linter, syntax viewer, etc.) which lex QPP
+// files directly and cannot easily perform a restore step on structured output.
+// The formatter does NOT rely on TK_QPP_INLINE_EXPR; substitution here
+// removes the backtick patterns before the lexer runs.  See verilog.lex for
+// the full design note.
+static std::string SubstituteQppInlineExprs(
+    std::string_view text,
+    std::vector<std::pair<std::string, std::string>> *subs) {
+  std::string result;
+  result.reserve(text.size());
+  int counter = 0;
+  size_t i = 0;
+  while (i < text.size()) {
+    if (text[i] != '`') {
+      result += text[i++];
+      continue;
+    }
+    // Backtick found — scan for a closing backtick on the same line.
+    size_t j = i + 1;
+    bool has_bracket = false;
+    bool has_paren_before_bracket = false;
+    while (j < text.size() && text[j] != '`' && text[j] != '\n') {
+      if (text[j] == '[') has_bracket = true;
+      if (text[j] == '(' && !has_bracket) has_paren_before_bracket = true;
+      ++j;
+    }
+    if (j < text.size() && text[j] == '`' && j > i + 1) {
+      std::string_view content = text.substr(i + 1, j - i - 1);
+      // Classify the content.
+      bool is_bare_ident = true;
+      for (size_t k = 0; k < content.size(); ++k) {
+        char c = content[k];
+        bool id_char =
+            (c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+             (k > 0 && c >= '0' && c <= '9'));
+        if (!id_char) {
+          is_bare_ident = false;
+          break;
+        }
+      }
+      bool is_subscript = has_bracket && !has_paren_before_bracket;
+      if (is_bare_ident || is_subscript) {
+        std::string original(text.substr(i, j - i + 1));
+        std::string placeholder = absl::StrCat("__qpp_", counter++, "__");
+        subs->push_back({placeholder, original});
+        result += placeholder;
+        i = j + 1;
+        continue;
+      }
+    }
+    result += text[i++];
+  }
+  return result;
+}
+
+// Reverses the substitution performed by SubstituteQppInlineExprs,
+// replacing each __qpp_N__ placeholder with its original QPP text.
+static std::string RestoreQppInlineExprs(
+    std::string_view text,
+    const std::vector<std::pair<std::string, std::string>> &subs) {
+  std::string result(text);
+  for (const auto &[placeholder, original] : subs) {
+    size_t pos = 0;
+    while ((pos = result.find(placeholder, pos)) != std::string::npos) {
+      result.replace(pos, placeholder.size(), original);
+      pos += original.size();
+    }
+  }
+  return result;
+}
+
 Status FormatVerilog(std::string_view text, std::string_view filename,
                      const FormatStyle &style, std::ostream &formatted_stream,
                      const LineNumberSet &lines,
                      const ExecutionControl &control) {
-  const auto analyzer = ParseWithStatus(text, filename);
+  // Replace bare-ident QPP inline exprs (`clk`, `hash`, etc.) with stable
+  // placeholder identifiers so the SV parser processes them cleanly.
+  // Placeholders are restored in the output after formatting.
+  std::vector<std::pair<std::string, std::string>> qpp_subs;
+  std::string substituted;
+  std::string_view effective_text = text;
+  substituted = SubstituteQppInlineExprs(text, &qpp_subs);
+  if (!qpp_subs.empty()) effective_text = substituted;
+
+  const auto analyzer = ParseWithStatus(effective_text, filename);
   if (!analyzer.ok()) return analyzer.status();
 
   const verible::TextStructureView &text_structure = analyzer->get()->Data();
   std::string formatted_text;
   Status format_status = FormatVerilog(text_structure, filename, style,
                                        &formatted_text, lines, control);
-  // Commit formatted text to the output stream independent of status.
-  formatted_stream << formatted_text;
+  // Commit formatted text to the output stream, restoring QPP inline exprs.
+  if (qpp_subs.empty()) {
+    formatted_stream << formatted_text;
+  } else {
+    formatted_stream << RestoreQppInlineExprs(formatted_text, qpp_subs);
+  }
   if (!format_status.ok()) return format_status;
 
   // When formatting whole-file (no --lines are specified), ensure that
   // the formatting transformation is convergent after one iteration.
   //   format(format(text)) == format(text)
+  // Convergence is verified on placeholder text; placeholders are valid SV
+  // identifiers and format stably.
   if (control.verify_convergence) {
     std::ostringstream reformat_stream;
     if (auto reformat_status =
-            ReformatVerilog(text, formatted_text, filename, style,
+            ReformatVerilog(effective_text, formatted_text, filename, style,
                             reformat_stream, lines, control);
         !reformat_status.ok()) {
       return reformat_status;
     }
     const std::string &reformatted_text(reformat_stream.str());
-    return verible::ReformatMustMatch(text, lines, formatted_text,
+    return verible::ReformatMustMatch(effective_text, lines, formatted_text,
                                       reformatted_text);
   }
   return format_status;
