@@ -299,8 +299,9 @@ static std::string SubstituteBareQppInlineExprs(
     }
     // Backtick found — check for bare-ident form.
     size_t j = i + 1;
-    if (j < text.size() && (text[j] == '_' || (text[j] >= 'A' && text[j] <= 'Z') ||
-                             (text[j] >= 'a' && text[j] <= 'z'))) {
+    if (j < text.size() &&
+        (text[j] == '_' || (text[j] >= 'A' && text[j] <= 'Z') ||
+         (text[j] >= 'a' && text[j] <= 'z'))) {
       size_t k = j;
       while (k < text.size() &&
              (text[k] == '_' || (text[k] >= 'A' && text[k] <= 'Z') ||
