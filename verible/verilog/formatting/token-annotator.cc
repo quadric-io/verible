@@ -781,12 +781,23 @@ static WithReason<SpacingOptions> BreakDecisionBetween(
   }
 
   // QPP directive lines must stay at column 0 so the QPP preprocessor's '^;'
-  // pattern recognizes them after formatting.  kPreserve keeps the original
-  // newline + 0-indentation from the source file intact.
-  if (left.format_token_enum == FTT::qpp_directive ||
-      right.format_token_enum == FTT::qpp_directive) {
+  // pattern recognizes them after formatting.
+  //
+  // Before a directive (right == qpp_directive): kPreserve keeps the original
+  // newline + 0-indentation intact, so the directive stays at column 0.
+  //
+  // After a directive (left == qpp_directive): use kMustWrap so the formatter
+  // emits a line break and then applies normal block indentation to the first
+  // SV token on the next line.  kPreserve here would prevent the partition
+  // indentation from being applied, causing the first SV token after every
+  // directive to land at column 0 instead of its correct indent level.
+  if (right.format_token_enum == FTT::qpp_directive) {
     return {SpacingOptions::kPreserve,
             "QPP directive: preserve column-0 position"};
+  }
+  if (left.format_token_enum == FTT::qpp_directive) {
+    return {SpacingOptions::kMustWrap,
+            "After QPP directive: wrap with normal block indentation"};
   }
 
   // Check for mandatory line breaks.
