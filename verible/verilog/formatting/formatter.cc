@@ -282,7 +282,7 @@ absl::Status FormatVerilog(const verible::TextStructureView &text_structure,
 // Both forms are detected by scanning for a closing backtick on the same line.
 // The content between backticks determines which form:
 //   - Pure identifier chars only → bare-ident
-//   - Contains '[' with no '(' before it → subscript (mirrors QppInlineExpr)
+//   - Contains '[' anywhere → subscript (Verilog macros never have closing backtick)
 //
 // SV compiler directives (`define, `ifdef, ...) have no closing backtick on
 // the same line and are left untouched.
@@ -313,10 +313,8 @@ static std::string SubstituteQppInlineExprs(
     // Backtick found — scan for a closing backtick on the same line.
     size_t j = i + 1;
     bool has_bracket = false;
-    bool has_paren_before_bracket = false;
     while (j < text.size() && text[j] != '`' && text[j] != '\n') {
       if (text[j] == '[') has_bracket = true;
-      if (text[j] == '(' && !has_bracket) has_paren_before_bracket = true;
       ++j;
     }
     if (j < text.size() && text[j] == '`' && j > i + 1) {
@@ -333,7 +331,10 @@ static std::string SubstituteQppInlineExprs(
           break;
         }
       }
-      bool is_subscript = has_bracket && !has_paren_before_bracket;
+      // Subscript form: any expression containing '[' within backticks.
+      // Verilog macros (`MACRO(args)) never have a closing backtick, so a
+      // backtick-delimited expression with '[' can only be QPP.
+      bool is_subscript = has_bracket;
       if (is_bare_ident || is_subscript) {
         std::string original(text.substr(i, j - i + 1));
         std::string placeholder = absl::StrCat("__qpp_", counter++, "__");
