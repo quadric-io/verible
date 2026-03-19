@@ -79,11 +79,17 @@ TEST(QppFormatterTest, InlineExpressionNoSpaceInserted) {
   const FormatStyle style = DefaultStyle();
   static constexpr FormatterTestCase kCases[] = {
       // Logic declaration with inline width expression in bit-range.
-      // After filtering the inline expr, `logic [  -1:0] data;` is valid SV.
-      // No spaces inserted around the backtick tokens.
+      // After substitution, `logic [__qpp_0__-1:0] data;` is valid SV.
+      // No spaces inserted around the backtick tokens after restoration.
       {
           "module m;\nlogic [`config['WIDTH']`-1:0] data;\nendmodule\n",
           "module m;\n  logic [`config['WIDTH']`-1:0] data;\nendmodule\n",
+      },
+      // Both bounds of a bit-range are inline exprs.  Substituting both gives
+      // `logic [__qpp_0__-1:__qpp_1__] data;` which is valid SV.
+      {
+          "module m;\nlogic [`config['W']`-1:`config['LO']`] data;\nendmodule\n",
+          "module m;\n  logic [`config['W']`-1:`config['LO']`] data;\nendmodule\n",
       },
   };
   for (const auto &tc : kCases) RunFormatterTest(tc, style);

@@ -273,19 +273,23 @@ absl::Status FormatVerilog(const verible::TextStructureView &text_structure,
   return format_status;
 }
 
-// Replaces bare-identifier QPP inline expressions of the form `ident` with
-// stable placeholder tokens __qpp_N__ that the SV parser handles without
-// warnings.  Subscript-form exprs (`config['KEY']`) already produce
-// TK_QPP_INLINE_EXPR tokens and are not touched here.
+// Replaces QPP inline expressions with stable placeholder identifiers so the
+// SV parser processes the surrounding code cleanly.  Two forms are handled:
 //
-// A bare-ident inline expr is distinguished by:
-//   - opening backtick
-//   - identifier ([A-Za-z_][A-Za-z0-9_]*)
-//   - immediately closing backtick (no '[' or other chars in between)
+//   Bare-ident:   `ident`          — backtick + identifier + backtick
+//   Subscript:    `config['KEY']`  — backtick + content-with-[ + backtick
 //
-// This differs from SV compiler directives (`define, `ifdef, ...) which have
-// no closing backtick.
-static std::string SubstituteBareQppInlineExprs(
+// Both forms are detected by scanning for a closing backtick on the same line.
+// The content between backticks determines which form:
+//   - Pure identifier chars only → bare-ident
+//   - Contains '[' with no '(' before it → subscript (mirrors QppInlineExpr)
+//
+// SV compiler directives (`define, `ifdef, ...) have no closing backtick on
+// the same line and are left untouched.
+//
+// Placeholders (__qpp_N__) are valid SV identifiers and format stably, so
+// convergence checking operates correctly on the substituted text.
+static std::string SubstituteQppInlineExprs(
     std::string_view text,
     std::vector<std::pair<std::string, std::string>> *subs) {
   std::string result;
@@ -297,25 +301,36 @@ static std::string SubstituteBareQppInlineExprs(
       result += text[i++];
       continue;
     }
-    // Backtick found — check for bare-ident form.
+    // Backtick found — scan for a closing backtick on the same line.
     size_t j = i + 1;
-    if (j < text.size() &&
-        (text[j] == '_' || (text[j] >= 'A' && text[j] <= 'Z') ||
-         (text[j] >= 'a' && text[j] <= 'z'))) {
-      size_t k = j;
-      while (k < text.size() &&
-             (text[k] == '_' || (text[k] >= 'A' && text[k] <= 'Z') ||
-              (text[k] >= 'a' && text[k] <= 'z') ||
-              (text[k] >= '0' && text[k] <= '9'))) {
-        ++k;
+    bool has_bracket = false;
+    bool has_paren_before_bracket = false;
+    while (j < text.size() && text[j] != '`' && text[j] != '\n') {
+      if (text[j] == '[') has_bracket = true;
+      if (text[j] == '(' && !has_bracket) has_paren_before_bracket = true;
+      ++j;
+    }
+    if (j < text.size() && text[j] == '`' && j > i + 1) {
+      std::string_view content = text.substr(i + 1, j - i - 1);
+      // Classify the content.
+      bool is_bare_ident = true;
+      for (size_t k = 0; k < content.size(); ++k) {
+        char c = content[k];
+        bool id_char = (c == '_' || (c >= 'A' && c <= 'Z') ||
+                        (c >= 'a' && c <= 'z') ||
+                        (k > 0 && c >= '0' && c <= '9'));
+        if (!id_char) {
+          is_bare_ident = false;
+          break;
+        }
       }
-      // Closing backtick immediately after identifier → bare-ident inline expr.
-      if (k < text.size() && text[k] == '`') {
-        std::string original(text.substr(i, k - i + 1));
+      bool is_subscript = has_bracket && !has_paren_before_bracket;
+      if (is_bare_ident || is_subscript) {
+        std::string original(text.substr(i, j - i + 1));
         std::string placeholder = absl::StrCat("__qpp_", counter++, "__");
         subs->push_back({placeholder, original});
         result += placeholder;
-        i = k + 1;
+        i = j + 1;
         continue;
       }
     }
@@ -324,9 +339,9 @@ static std::string SubstituteBareQppInlineExprs(
   return result;
 }
 
-// Reverses the substitution performed by SubstituteBareQppInlineExprs,
+// Reverses the substitution performed by SubstituteQppInlineExprs,
 // replacing each __qpp_N__ placeholder with its original QPP text.
-static std::string RestoreBareQppInlineExprs(
+static std::string RestoreQppInlineExprs(
     std::string_view text,
     const std::vector<std::pair<std::string, std::string>> &subs) {
   std::string result(text);
@@ -350,7 +365,7 @@ Status FormatVerilog(std::string_view text, std::string_view filename,
   std::vector<std::pair<std::string, std::string>> qpp_subs;
   std::string substituted;
   std::string_view effective_text = text;
-  substituted = SubstituteBareQppInlineExprs(text, &qpp_subs);
+  substituted = SubstituteQppInlineExprs(text, &qpp_subs);
   if (!qpp_subs.empty()) effective_text = substituted;
 
   const auto analyzer = ParseWithStatus(effective_text, filename);
@@ -364,7 +379,7 @@ Status FormatVerilog(std::string_view text, std::string_view filename,
   if (qpp_subs.empty()) {
     formatted_stream << formatted_text;
   } else {
-    formatted_stream << RestoreBareQppInlineExprs(formatted_text, qpp_subs);
+    formatted_stream << RestoreQppInlineExprs(formatted_text, qpp_subs);
   }
   if (!format_status.ok()) return format_status;
 
