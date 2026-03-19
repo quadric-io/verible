@@ -200,6 +200,18 @@ cc_test(
 )
 
 cc_test(
+    name = "qpp_formatter_test",
+    srcs = ["qpp_formatter_test.cc"],
+    deps = [
+        ":format-style",
+        ":formatter",
+        "@abseil-cpp//absl/status",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "formatter-tuning_test",
     srcs = ["formatter-tuning_test.cc"],
     deps = [

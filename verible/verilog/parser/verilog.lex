@@ -187,6 +187,9 @@ EvalStringLiteral {UnterminatedEvalStringLiteral}`\"
  * unmatched backtick is greedily consumed.
  * Must be matched before MacroIdentifier to take priority. */
 QppInlineExpr `[^`\n(\[]*\[[^`\n]*`
+/* QPP nested-directive indentation: 0 or more groups of 4 literal spaces,
+ * matching Python's 4-space indentation convention. */
+QppIndent ("    ")*
 
 /* Preprocessor angle-bracket `include */
 UnterminatedAngleBracketString <{StringContent}
@@ -274,18 +277,24 @@ PragmaEndProtected {Pragma}{Space}+protect{Space}+end_protected
 
   /* SV end-keywords at BOL after an empty statement (e.g. ';endtask',
    * ';end endfunction') must not be consumed as QPP directives.  Python has no
-   * 'end*' or 'join*' keywords, so this exclusion rule fires first on ties. */
-<INITIAL>^;(end[a-z_]*|join[a-z_]*)[^\n]*\n? { yyless(1); UpdateLocation(); return ';'; }
+   * 'end*' or 'join*' keywords, so this exclusion rule fires first on ties.
+   * Optional 4-space indentation handles the ';    end...' variant (nested). */
+<INITIAL>^;{QppIndent}(end[a-z_]*|join[a-z_]*)[^\n]*\n? { yyless(1); UpdateLocation(); return ';'; }
 
-  /* QPP directive lines start with ';' at column 0.  Three cases:
-   *   1. ';#...' — Python comment line.
-   *   2. ';identifier SEP...' — Python statement where SEP is whitespace, ':'
-   *      or '=' (avoids consuming ';a<=b' which is an SV non-blocking assign).
-   *   3. ';identifier$' — keyword alone at end-of-line (e.g. ';pass').
+  /* QPP directive lines: ';' at column 0, with optional Python indentation
+   * expressed as multiples of 4 spaces ({QppIndent}; matches Python's
+   * standard 4-space indent), then the Python statement.  Three cases:
+   *   1. ';{QppIndent}#...' — Python comment.
+   *   2. ';{QppIndent}identifier SEP...' — Python statement where SEP is
+   *      whitespace, ':' or '=' (avoids matching ';a<=b', SV non-blocking
+   *      assign, which has no such separator after the identifier).
+   *   3. ';{QppIndent}identifier$' — keyword alone at EOL (e.g. ';    pass').
+   * Using {QppIndent} (multiples of 4 spaces) rather than [ \t]* prevents
+   * false-positive matches on SV semicolons at BOL like '; bit [N:0] x'.
    * All three consume to end-of-line; the newline token is emitted next. */
-<INITIAL>^;#[^\n]* { UpdateLocation(); return TK_QPP_DIRECTIVE; }
-<INITIAL>^;[A-Za-z_][A-Za-z0-9_]*[ \t:=][^\n]* { UpdateLocation(); return TK_QPP_DIRECTIVE; }
-<INITIAL>^;[A-Za-z_][A-Za-z0-9_]*$ { UpdateLocation(); return TK_QPP_DIRECTIVE; }
+<INITIAL>^;{QppIndent}#[^\n]* { UpdateLocation(); return TK_QPP_DIRECTIVE; }
+<INITIAL>^;{QppIndent}[A-Za-z_][A-Za-z0-9_]*[ \t:=][^\n]* { UpdateLocation(); return TK_QPP_DIRECTIVE; }
+<INITIAL>^;{QppIndent}[A-Za-z_][A-Za-z0-9_]*$ { UpdateLocation(); return TK_QPP_DIRECTIVE; }
 
   /* QPP inline expressions: backtick-delimited Python expressions that expand
    * to SV identifiers/values.  Must precede MacroIdentifier so the greedy

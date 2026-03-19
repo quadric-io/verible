@@ -36,12 +36,7 @@ void VerilogLexer::Restart(std::string_view code) {
 bool VerilogLexer::TokenIsError(const TokenInfo &token) const {
   // TODO(fangism): Distinguish different lexical errors by returning different
   // enums.
-  // TK_QPP_DIRECTIVE is a valid token in top-level Verilog context, but when
-  // re-lexed inside a MacroArg (by MacroCallArgExpander), it should be treated
-  // as a lex error so the expansion is rejected and MacroArg is preserved
-  // as-is.
-  return token.token_enum() == TK_OTHER ||
-         token.token_enum() == TK_QPP_DIRECTIVE;
+  return token.token_enum() == TK_OTHER;
 }
 
 bool VerilogLexer::KeepSyntaxTreeTokens(const TokenInfo &t) {
