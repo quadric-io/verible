@@ -178,15 +178,16 @@ UnterminatedEvalStringLiteral `\"{EvalStringLiteralContent}
 EvalStringLiteral {UnterminatedEvalStringLiteral}`\"
 
 /* QPP (Quadric Python Preprocessor) constructs */
-/* Inline expressions: backtick-delimited Python subscript expression.
- * Requires at least one '[' in the content to distinguish from SV compiler
- * directives (`MACRO, `ifdef, etc.) which are plain identifiers.
- * All real QPP inline expressions use Python subscript notation, e.g.
- * `config['KEY']`, `config['KEY']-1`.
- * '(' excluded to prevent consuming SV macro calls; content up to first
- * unmatched backtick is greedily consumed.
+/* Inline expressions: backtick-delimited QPP substitution.  Two forms:
+ *   1. Subscript:  `config['KEY']`  — contains at least one '['.
+ *   2. Bare ident: `clk`            — plain identifier (letters/digits/_).
+ * SV compiler directives (`ifdef, `define, etc.) never have a closing
+ * backtick, so these forms are unambiguous.  The subscript form excludes
+ * '(' to avoid consuming SV macro calls.  The bare-ident form is strictly
+ * [A-Za-z_][A-Za-z0-9_]* to avoid greedily matching across SV operators
+ * (e.g. `mac + `other would otherwise absorb `mac + ` as one token).
  * Must be matched before MacroIdentifier to take priority. */
-QppInlineExpr `[^`\n(\[]*\[[^`\n]*`
+QppInlineExpr (`[^`\n(\[]*\[[^`\n]*`)|(`[A-Za-z_][A-Za-z0-9_]*`)
 /* QPP nested-directive indentation: 0 or more groups of 4 literal spaces,
  * matching Python's 4-space indentation convention. */
 QppIndent ("    ")*
