@@ -177,6 +177,27 @@ TEST(QppFormatterTest, NestedDirectivesPreservedVerbatim) {
   for (const auto &tc : kCases) RunFormatterTest(tc, style);
 }
 
+// ---------------------------------------------------------------------------
+// Bare-identifier QPP inline expressions: `ident`
+//
+// Bare-ident forms (`clk`, `hash`, etc.) are not recognized by the QPP lexer
+// (which only handles subscript forms like `config['KEY']`).  The formatter
+// pre-substitutes them with stable placeholder identifiers, formats, then
+// restores the originals in the output.
+// ---------------------------------------------------------------------------
+TEST(QppFormatterTest, BareIdentInlineExprPreservedInContext) {
+  const FormatStyle style = DefaultStyle();
+  static constexpr FormatterTestCase kCases[] = {
+      // always @(posedge `clk`) — bare-ident in sensitivity list position.
+      // Formatter substitutes `clk` with __qpp_0__, formats, then restores.
+      {
+          "module m;\nalways @(posedge `clk`) begin\nend\nendmodule\n",
+          "module m;\n  always @(posedge `clk`) begin\n  end\nendmodule\n",
+      },
+  };
+  for (const auto &tc : kCases) RunFormatterTest(tc, style);
+}
+
 }  // namespace
 }  // namespace formatter
 }  // namespace verilog
