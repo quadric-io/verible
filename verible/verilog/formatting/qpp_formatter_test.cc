@@ -178,6 +178,60 @@ TEST(QppFormatterTest, NestedDirectivesPreservedVerbatim) {
 }
 
 // ---------------------------------------------------------------------------
+// QPP ;for loop directive
+//
+// ;for / ;pass behaves like ;if / ;pass — directive at col 0, SV body
+// indented.  This also exercises bare-ident inline exprs inside the loop
+// body (data_`i` is a QPP-constructed identifier).
+// ---------------------------------------------------------------------------
+TEST(QppFormatterTest, ForLoopDirective) {
+  const FormatStyle style = DefaultStyle();
+  static constexpr FormatterTestCase kCases[] = {
+      // ;for with bare-ident in loop body: data_`i` — the `i` is substituted
+      // to a placeholder, formatted, then restored.
+      {
+          "module m;\n"
+          ";for i in range(4):\n"
+          "logic [7:0] data_`i`;\n"
+          ";pass\n"
+          "endmodule\n",
+          "module m;\n"
+          ";for i in range(4):\n"
+          "  logic [7:0] data_`i`;\n"
+          ";pass\n"
+          "endmodule\n",
+      },
+  };
+  for (const auto &tc : kCases) RunFormatterTest(tc, style);
+}
+
+// ---------------------------------------------------------------------------
+// Empty body between QPP directives
+//
+// ;if immediately followed by ;pass with no SV between them — the formatter
+// must not insert any tokens or spacing between consecutive directives.
+// The SV after ;pass is still indented normally.
+// ---------------------------------------------------------------------------
+TEST(QppFormatterTest, EmptyBodyBetweenDirectives) {
+  const FormatStyle style = DefaultStyle();
+  static constexpr FormatterTestCase kCases[] = {
+      {
+          "module m;\n"
+          ";if (config['EN']):\n"
+          ";pass\n"
+          "logic [7:0] out;\n"
+          "endmodule\n",
+          "module m;\n"
+          ";if (config['EN']):\n"
+          ";pass\n"
+          "  logic [7:0] out;\n"
+          "endmodule\n",
+      },
+  };
+  for (const auto &tc : kCases) RunFormatterTest(tc, style);
+}
+
+// ---------------------------------------------------------------------------
 // Bare-identifier QPP inline expressions: `ident`
 //
 // Bare-ident forms (`clk`, `hash`, etc.) are not recognized by the QPP lexer
@@ -215,6 +269,11 @@ TEST(QppFormatterTest, BareIdentInlineExprPreservedInContext) {
           "      .rst(`rst`)\n"
           "  );\n"
           "endmodule\n",
+      },
+      // Parameter list: #(.PARAM(`ident`)) — bare-ident as parameter value.
+      {
+          "module m;\nsub #(.W(`width`)) u_sub (.clk(clk));\nendmodule\n",
+          "module m;\n  sub #(.W(`width`)) u_sub (.clk(clk));\nendmodule\n",
       },
   };
   for (const auto &tc : kCases) RunFormatterTest(tc, style);
