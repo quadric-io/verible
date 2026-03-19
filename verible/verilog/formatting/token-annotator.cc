@@ -426,11 +426,15 @@ static WithReason<int> SpacesRequiredBetween(
 
     // Spacing in ranges
     if (InRangeLikeContext(right_context)) {
-      int spaces = right.OriginalLeadingSpaces().length();
+      const auto orig = right.OriginalLeadingSpaces();
+      int spaces = static_cast<int>(orig.length());
       if (spaces > 1) {
-        // ExcessSpaces returns 0 if there was a newline - prevents
-        // counting indentation as spaces
-        spaces = right.ExcessSpaces() ? 1 : 0;
+        // ExcessSpaces returns 0 if there was a newline, preventing
+        // counting indentation as spaces.  But that case must not yield
+        // 0 spaces — when the original had a newline (e.g. from a prior
+        // line-wrap), default to 1 space to keep re-formatting convergent.
+        spaces = (absl::StrContains(orig, '\n')) ? 1
+                                                 : (right.ExcessSpaces() ? 1 : 0);
       }
       return {spaces, "Limit spaces before ':' in bit slice to 0 or 1"};
     }

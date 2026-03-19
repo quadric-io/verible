@@ -330,6 +330,7 @@ static std::string SubstituteQppInlineExprs(
       std::string_view content = text.substr(i + 1, j - i - 1);
       // Classify the content.
       bool is_bare_ident = true;
+      bool has_space_or_paren = false;
       for (size_t k = 0; k < content.size(); ++k) {
         char c = content[k];
         bool id_char =
@@ -337,7 +338,9 @@ static std::string SubstituteQppInlineExprs(
              (k > 0 && c >= '0' && c <= '9'));
         if (!id_char) {
           is_bare_ident = false;
-          break;
+          if (c == ' ' || c == '\t' || c == '(') {
+            has_space_or_paren = true;
+          }
         }
       }
       // Subscript form: expression containing '[' within backticks.
@@ -349,7 +352,13 @@ static std::string SubstituteQppInlineExprs(
       // (not an identifier), so they are still correctly matched.
       bool is_subscript =
           has_bracket && !(first_char_is_ident && has_paren_before_first_bracket);
-      if (is_bare_ident || is_subscript) {
+      // Arithmetic expression: starts with identifier, contains only arithmetic
+      // operators (no spaces, parens, or '[') — e.g. `NUM_GPNPU-1`.
+      // Such expressions are unambiguously QPP inline exprs: SV macro calls
+      // always have either no closing backtick or contain '(' before any '['.
+      bool is_arith_expr =
+          first_char_is_ident && !is_bare_ident && !has_bracket && !has_space_or_paren;
+      if (is_bare_ident || is_subscript || is_arith_expr) {
         std::string original(text.substr(i, j - i + 1));
         std::string placeholder = absl::StrCat("__qpp_", counter++, "__");
         subs->push_back({placeholder, original});
@@ -510,10 +519,22 @@ static void DeterminePartitionExpansion(
 
   const auto PreserveSpaces = [&ftoken_range, &full_text,
                                preformatted_tokens]() {
-    const ByteOffsetSet new_disable_range{{DisableByteOffsetRange(
-        verible::make_string_view_range(ftoken_range.front().Text().begin(),
-                                        ftoken_range.back().Text().end()),
-        full_text)}};
+    // When the partition starts with a QPP directive, do not use the +1
+    // offset: the directive must be included in the disable range so that the
+    // kludge in PreserveSpacesOnDisabledTokenRanges (which skips a leading
+    // '\n' when the first disabled token has kMustWrap) does not misfire on
+    // the comma that follows the directive.  With the +1 the directive is
+    // excluded and the comma becomes the first token, triggering the kludge
+    // and stripping the newline before the comma from its preserved spacing.
+    const bool front_is_qpp =
+        ftoken_range.front().token->token_enum() ==
+        static_cast<int>(verilog_tokentype::TK_QPP_DIRECTIVE);
+    const std::string_view partition_text = verible::make_string_view_range(
+        ftoken_range.front().Text().begin(), ftoken_range.back().Text().end());
+    const auto raw_range = verible::SubstringOffsets(partition_text, full_text);
+    const verible::Interval<int> disable_interval{
+        front_is_qpp ? raw_range.first : raw_range.first + 1, raw_range.second};
+    const ByteOffsetSet new_disable_range{{disable_interval}};
     verible::PreserveSpacesOnDisabledTokenRanges(preformatted_tokens,
                                                  new_disable_range, full_text);
   };
@@ -1077,6 +1098,21 @@ Status Formatter::Format(const ExecutionControl &control) {
     }
   }
 
+  // Post-process: QPP directive lines must always start at column 0.
+  // The wrap optimizer may have changed the first token's spacing decision
+  // from kPreserve to kWrap (adding IndentationSpaces()), which would cause
+  // the verify step to fail because ";if ..." with leading spaces is not
+  // recognized as a QPP directive by the lexer.
+  for (verible::FormattedExcerpt &line : formatted_lines_) {
+    auto &tokens = line.MutableTokens();
+    if (!tokens.empty() &&
+        tokens.front().token->token_enum() ==
+            verilog_tokentype::TK_QPP_DIRECTIVE) {
+      tokens.front().before.action = verible::SpacingDecision::kPreserve;
+      tokens.front().before.spaces = 0;
+    }
+  }
+
   // Report any unwrapped lines that failed to complete wrap searching.
   if (!partially_formatted_lines.empty()) {
     std::ostringstream err_stream;
@@ -1133,18 +1169,35 @@ void Formatter::Emit(bool include_disabled, std::ostream &stream) const {
                               : line.Tokens().front().token->left(full_text);
     const std::string_view leading_whitespace(
         full_text.substr(position, front_offset - position));
-    FormatWhitespaceWithDisabledByteRanges(full_text, leading_whitespace,
-                                           disabled_ranges_, include_disabled,
-                                           stream, out_terminator);
-
-    // When front of first token is format-disabled, the previous call will
-    // already cover the space up to the front token, in which case,
-    // the left-indentation for this line should be suppressed to avoid
-    // being printed twice.
     if (!line.Tokens().empty()) {
+      const auto &front_token = line.Tokens().front();
+      // When the front token has kPreserve spacing with a valid
+      // preserved_space_start, emit OriginalLeadingSpaces() directly instead
+      // of going through FormatWhitespaceWithDisabledByteRanges.
+      // FormatWhitespaceWithDisabledByteRanges inserts a spurious newline when
+      // leading_whitespace is empty and the position is not in disabled_ranges_
+      // (this fires for consecutive child partitions of a preserved
+      // kFitOnLineElseExpand partition), causing non-convergent formatting.
+      if (front_token.before.action == verible::SpacingDecision::kPreserve &&
+          front_token.before.preserved_space_start !=
+              verible::string_view_null_iterator()) {
+        stream << front_token.OriginalLeadingSpaces();
+      } else {
+        FormatWhitespaceWithDisabledByteRanges(full_text, leading_whitespace,
+                                               disabled_ranges_, include_disabled,
+                                               stream, out_terminator);
+      }
+      // When front of first token is format-disabled, the previous call will
+      // already cover the space up to the front token, in which case,
+      // the left-indentation for this line should be suppressed to avoid
+      // being printed twice.
       line.FormattedText(stream, !disabled_ranges_.Contains(front_offset),
                          include_token_p);
       position = line.Tokens().back().token->right(full_text);
+    } else {
+      FormatWhitespaceWithDisabledByteRanges(full_text, leading_whitespace,
+                                             disabled_ranges_, include_disabled,
+                                             stream, out_terminator);
     }
   }
 
