@@ -313,8 +313,17 @@ static std::string SubstituteQppInlineExprs(
     // Backtick found — scan for a closing backtick on the same line.
     size_t j = i + 1;
     bool has_bracket = false;
+    bool has_paren_before_first_bracket = false;
+    bool first_char_is_ident =
+        (j < text.size() &&
+         (text[j] == '_' || (text[j] >= 'A' && text[j] <= 'Z') ||
+          (text[j] >= 'a' && text[j] <= 'z')));
     while (j < text.size() && text[j] != '`' && text[j] != '\n') {
-      if (text[j] == '[') has_bracket = true;
+      if (text[j] == '[') {
+        has_bracket = true;
+      } else if (text[j] == '(' && !has_bracket) {
+        has_paren_before_first_bracket = true;
+      }
       ++j;
     }
     if (j < text.size() && text[j] == '`' && j > i + 1) {
@@ -331,10 +340,15 @@ static std::string SubstituteQppInlineExprs(
           break;
         }
       }
-      // Subscript form: any expression containing '[' within backticks.
-      // Verilog macros (`MACRO(args)) never have a closing backtick, so a
-      // backtick-delimited expression with '[' can only be QPP.
-      bool is_subscript = has_bracket;
+      // Subscript form: expression containing '[' within backticks.
+      // Exception: if the expression starts with an identifier and has '('
+      // before the first '[', it is a Verilog macro call like
+      //   `MACRO(args[i], ..., `nested_qpp`)
+      // where the "closing" backtick actually belongs to a nested QPP token
+      // inside the macro arguments. QPP Python ternary forms start with '('
+      // (not an identifier), so they are still correctly matched.
+      bool is_subscript =
+          has_bracket && !(first_char_is_ident && has_paren_before_first_bracket);
       if (is_bare_ident || is_subscript) {
         std::string original(text.substr(i, j - i + 1));
         std::string placeholder = absl::StrCat("__qpp_", counter++, "__");
