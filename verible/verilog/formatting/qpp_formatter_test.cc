@@ -194,6 +194,28 @@ TEST(QppFormatterTest, BareIdentInlineExprPreservedInContext) {
           "module m;\nalways @(posedge `clk`) begin\nend\nendmodule\n",
           "module m;\n  always @(posedge `clk`) begin\n  end\nendmodule\n",
       },
+      // Multiple bare-idents on the same line — each gets its own placeholder.
+      {
+          "module m;\n"
+          "always @(posedge `clk` or negedge `rst_n`) begin\n"
+          "end\n"
+          "endmodule\n",
+          "module m;\n"
+          "  always @(posedge `clk` or negedge `rst_n`) begin\n"
+          "  end\n"
+          "endmodule\n",
+      },
+      // Port connection: .port(`ident`) — bare-ident as port expression.
+      // Each port goes on its own line per Verible's instantiation style.
+      {
+          "module m;\nsub u_sub (.clk(`clk`), .rst(`rst`));\nendmodule\n",
+          "module m;\n"
+          "  sub u_sub (\n"
+          "      .clk(`clk`),\n"
+          "      .rst(`rst`)\n"
+          "  );\n"
+          "endmodule\n",
+      },
   };
   for (const auto &tc : kCases) RunFormatterTest(tc, style);
 }
