@@ -88,8 +88,10 @@ TEST(QppFormatterTest, InlineExpressionNoSpaceInserted) {
       // Both bounds of a bit-range are inline exprs.  Substituting both gives
       // `logic [__qpp_0__-1:__qpp_1__] data;` which is valid SV.
       {
-          "module m;\nlogic [`config['W']`-1:`config['LO']`] data;\nendmodule\n",
-          "module m;\n  logic [`config['W']`-1:`config['LO']`] data;\nendmodule\n",
+          "module m;\nlogic [`config['W']`-1:`config['LO']`] "
+          "data;\nendmodule\n",
+          "module m;\n  logic [`config['W']`-1:`config['LO']`] "
+          "data;\nendmodule\n",
       },
   };
   for (const auto &tc : kCases) RunFormatterTest(tc, style);

@@ -325,9 +325,9 @@ static std::string SubstituteQppInlineExprs(
       bool is_bare_ident = true;
       for (size_t k = 0; k < content.size(); ++k) {
         char c = content[k];
-        bool id_char = (c == '_' || (c >= 'A' && c <= 'Z') ||
-                        (c >= 'a' && c <= 'z') ||
-                        (k > 0 && c >= '0' && c <= '9'));
+        bool id_char =
+            (c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+             (k > 0 && c >= '0' && c <= '9'));
         if (!id_char) {
           is_bare_ident = false;
           break;
