@@ -185,12 +185,29 @@ EvalStringLiteral {UnterminatedEvalStringLiteral}`\"
  * `config['KEY']`, `config['KEY']-1`.
  * '(' excluded to prevent consuming SV macro calls; content up to first
  * unmatched backtick is greedily consumed.
- * NOTE: bare-identifier forms like `clk` are intentionally NOT matched
- * here.  Filtering them from the syntax tree would leave `always @(posedge)
- * begin` etc. causing cascading parse failures.  They produce a single
- * lexical warning (stray backtick) but the formatter still produces correct
- * output for the surrounding code.
- * Must be matched before MacroIdentifier to take priority. */
+ * Must be matched before MacroIdentifier to take priority.
+ *
+ * Design note — two-layer QPP inline expression handling:
+ *
+ * TK_QPP_INLINE_EXPR (this rule) is the lexer-level mechanism.  Tokens are
+ * filtered from the syntax tree by KeepSyntaxTreeTokens and treated as opaque
+ * atoms, preserving original text without a restore step.  This protects all
+ * non-formatter Verible tools (linter, syntax tree viewer, equivalence
+ * checker, etc.) that lex QPP files directly and produce structured output
+ * (diagnostics, token text) where a substitute/restore cycle is impractical.
+ *
+ * The formatter uses a separate pre/post substitution mechanism
+ * (SubstituteQppInlineExprs / RestoreQppInlineExprs in formatter.cc) that
+ * covers both subscript-form and bare-identifier forms (`ident`).  With
+ * substitution, backtick patterns are gone before the lexer runs, so this
+ * rule never fires for formatter input.  The formatter does NOT rely on
+ * TK_QPP_INLINE_EXPR; it is retained solely for the non-formatter tools
+ * described above.
+ *
+ * Bare-identifier forms (`clk`, `rst_n`, etc.) are intentionally NOT matched
+ * here.  Filtering them from the syntax tree would remove tokens from
+ * positions like `always @(posedge `clk`)`, leaving invalid SV and causing
+ * cascading parse failures in non-formatter tools. */
 QppInlineExpr `[^`\n(\[]*\[[^`\n]*`
 /* QPP nested-directive indentation: 0 or more groups of 4 literal spaces,
  * matching Python's 4-space indentation convention. */

@@ -289,6 +289,15 @@ absl::Status FormatVerilog(const verible::TextStructureView &text_structure,
 //
 // Placeholders (__qpp_N__) are valid SV identifiers and format stably, so
 // convergence checking operates correctly on the substituted text.
+//
+// Design note: the lexer also recognises subscript-form inline exprs via the
+// QppInlineExpr rule, producing TK_QPP_INLINE_EXPR tokens that are filtered
+// from the syntax tree by KeepSyntaxTreeTokens.  That mechanism is retained
+// for non-formatter Verible tools (linter, syntax viewer, etc.) which lex QPP
+// files directly and cannot easily perform a restore step on structured output.
+// The formatter does NOT rely on TK_QPP_INLINE_EXPR; substitution here
+// removes the backtick patterns before the lexer runs.  See verilog.lex for
+// the full design note.
 static std::string SubstituteQppInlineExprs(
     std::string_view text,
     std::vector<std::pair<std::string, std::string>> *subs) {
