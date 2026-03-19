@@ -30,14 +30,13 @@
 // Inline expressions are only safe in positions where their removal leaves
 // valid SV (e.g. bit-range positions like [`expr`-1:0]).
 
-#include "verible/verilog/formatting/formatter.h"
-
 #include <sstream>
 #include <string_view>
 
 #include "absl/status/status.h"
 #include "gtest/gtest.h"
 #include "verible/verilog/formatting/format-style.h"
+#include "verible/verilog/formatting/formatter.h"
 
 #undef EXPECT_OK
 #define EXPECT_OK(value) EXPECT_TRUE((value).ok())
@@ -65,9 +64,7 @@ static void RunFormatterTest(const FormatterTestCase &test_case,
   const auto status =
       FormatVerilog(test_case.input, "<qpp-test>", style, stream);
   EXPECT_OK(status);
-  EXPECT_EQ(stream.str(), test_case.expected)
-      << "input:\n"
-      << test_case.input;
+  EXPECT_EQ(stream.str(), test_case.expected) << "input:\n" << test_case.input;
 }
 
 // ---------------------------------------------------------------------------
