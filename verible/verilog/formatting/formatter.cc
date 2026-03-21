@@ -379,6 +379,186 @@ static std::string RestoreQppInlineExprs(
   return result;
 }
 
+// ===== QPP sequential branch formatting =====
+//
+// When a QPP if/else block is visible to the parser simultaneously, both
+// branches contribute tokens to the combined SV token stream.  This causes:
+//   - begin/end imbalance   (if one branch opens a block the other doesn't)
+//   - duplicate terminators (both branches close a statement with ';')
+//
+// The sequential approach formats each branch independently:
+//   ;if cond:
+//     [if-branch SV]    ← formatted using if-masked text
+//   ;else:
+//     [else-branch SV]  ← formatted using else-masked text
+//   ;pass
+//
+// We produce two masked versions of the file:
+//   if-masked   : else-branch lines replaced by blank lines
+//   else-masked : if-branch  lines replaced by blank lines
+// format each masked text (both are valid SV), then merge by substituting
+// the formatted else-branch content from else-masked into if-formatted.
+//
+// Constraint: each branch must leave the parser at the same depth as the
+// other.  This is the natural invariant for well-formed QPP code.  If the
+// else-masked text fails to parse, we fall back to single-pass.
+//
+// Nested QPP blocks (a block whose line range is strictly inside another
+// block's range) are not yet handled sequentially — they fall back to
+// single-pass as well.
+
+// Line-number bounds of a QPP if/else/pass block (0-based line indices).
+struct QppBlockBounds {
+  int if_line;    // line index of the ;if directive
+  int else_line;  // -1 if the block has no ;else branch
+  int pass_line;  // line index of the ;pass directive
+};
+
+// Returns true if 'line' is a QPP directive whose first keyword matches 'kw'.
+// QPP directive lines have the form: ^;(    )*<kw>[ \t:(#\r]?$
+static bool IsQppKw(std::string_view line, std::string_view kw) {
+  if (line.empty() || line[0] != ';') return false;
+  size_t i = 1;
+  while (i < line.size() && line[i] == ' ') ++i;
+  if (line.substr(i, kw.size()) != kw) return false;
+  i += kw.size();
+  return i >= line.size() || line[i] == ' ' || line[i] == '\t' ||
+         line[i] == ':' || line[i] == '(' || line[i] == '#' ||
+         line[i] == '\r';
+}
+
+// Scan 'text' for QPP if/else/pass block boundaries.  Returns one entry per
+// matched if/pass pair; inner blocks appear before outer blocks.
+static std::vector<QppBlockBounds> ScanQppBlocks(std::string_view text) {
+  std::vector<QppBlockBounds> result;
+  std::vector<QppBlockBounds> stack;
+  int line_no = 0;
+  while (!text.empty()) {
+    size_t nl = text.find('\n');
+    std::string_view line =
+        (nl == std::string_view::npos) ? text : text.substr(0, nl);
+    if (IsQppKw(line, "if")) {
+      stack.push_back({line_no, -1, -1});
+    } else if (IsQppKw(line, "else")) {
+      if (!stack.empty() && stack.back().else_line == -1)
+        stack.back().else_line = line_no;
+    } else if (IsQppKw(line, "pass")) {
+      if (!stack.empty()) {
+        stack.back().pass_line = line_no;
+        result.push_back(stack.back());
+        stack.pop_back();
+      }
+    }
+    ++line_no;
+    text = (nl == std::string_view::npos) ? std::string_view()
+                                          : text.substr(nl + 1);
+  }
+  return result;
+}
+
+// Returns true if any block in 'blocks' is strictly nested inside another.
+static bool HasNestedQppBlocks(const std::vector<QppBlockBounds> &blocks) {
+  for (const auto &outer : blocks)
+    for (const auto &inner : blocks)
+      if (&outer != &inner && inner.if_line > outer.if_line &&
+          inner.if_line < outer.pass_line)
+        return true;
+  return false;
+}
+
+// Split 'text' into lines, keeping the trailing '\n' attached to each line.
+static std::vector<std::string> SplitLines(std::string_view text) {
+  std::vector<std::string> result;
+  while (!text.empty()) {
+    size_t nl = text.find('\n');
+    if (nl == std::string_view::npos) {
+      result.emplace_back(text);
+      break;
+    }
+    result.emplace_back(text.substr(0, nl + 1));
+    text = text.substr(nl + 1);
+  }
+  return result;
+}
+
+// Return a copy of 'text' with branch content replaced by bare newlines for
+// the non-selected side of each QPP block.  QPP directive lines are kept.
+//   keep_if=true  : blank lines between ;else: and ;pass (keep if-branch)
+//   keep_if=false : blank lines between ;if and ;else:   (keep else-branch)
+static std::string MaskQppBranches(std::string_view text, bool keep_if,
+                                   const std::vector<QppBlockBounds> &blocks) {
+  std::vector<std::string> lines = SplitLines(text);
+  std::vector<bool> blank(lines.size(), false);
+  for (const auto &b : blocks) {
+    if (keep_if) {
+      if (b.else_line >= 0)
+        for (int i = b.else_line + 1; i < b.pass_line; ++i) blank[i] = true;
+    } else {
+      int end = (b.else_line >= 0) ? b.else_line : b.pass_line;
+      for (int i = b.if_line + 1; i < end; ++i) blank[i] = true;
+    }
+  }
+  std::string result;
+  for (size_t i = 0; i < lines.size(); ++i)
+    result += blank[i] ? "\n" : lines[i];
+  return result;
+}
+
+// Extract the formatted else-branch content (lines between each ;else: and
+// ;pass, exclusive of the directive lines) from 'else_fmt'.
+// Returns one string per QPP block with an else-branch, in document order.
+static std::vector<std::string> ExtractElseSegments(
+    const std::string &else_fmt) {
+  std::vector<std::string> segments;
+  bool in_else = false;
+  std::string seg;
+  for (const auto &line : SplitLines(else_fmt)) {
+    std::string_view lv = line;
+    if (!lv.empty() && lv.back() == '\n') lv.remove_suffix(1);
+    if (IsQppKw(lv, "else")) {
+      in_else = true;
+      seg.clear();
+    } else if (IsQppKw(lv, "pass") && in_else) {
+      segments.push_back(seg);
+      in_else = false;
+    } else if (in_else) {
+      seg += line;
+    }
+  }
+  return segments;
+}
+
+// Merge if_formatted (has if-branch content, blank placeholder for else) with
+// else-branch segments extracted from else_formatted.  For each QPP block:
+//   - if-branch content comes from if_fmt
+//   - else-branch content comes from else_segs
+//   - QPP directive lines (;if, ;else:, ;pass) come from if_fmt
+static std::string MergeQppBranches(const std::string &if_fmt,
+                                     const std::vector<std::string> &else_segs) {
+  std::string result;
+  bool in_else_section = false;
+  size_t else_seg_idx = 0;
+  for (const auto &line : SplitLines(if_fmt)) {
+    std::string_view lv = line;
+    if (!lv.empty() && lv.back() == '\n') lv.remove_suffix(1);
+    if (IsQppKw(lv, "else")) {
+      result += line;  // emit ;else: directive, then switch source
+      in_else_section = true;
+    } else if (IsQppKw(lv, "pass") && in_else_section) {
+      // Emit else-branch content (from else_fmt), then ;pass
+      if (else_seg_idx < else_segs.size())
+        result += else_segs[else_seg_idx++];
+      result += line;
+      in_else_section = false;
+    } else if (in_else_section) {
+      // Skip blank placeholder line in if_fmt
+    } else {
+      result += line;
+    }
+  }
+  return result;
+}
+
 Status FormatVerilog(std::string_view text, std::string_view filename,
                      const FormatStyle &style, std::ostream &formatted_stream,
                      const LineNumberSet &lines,
@@ -387,18 +567,55 @@ Status FormatVerilog(std::string_view text, std::string_view filename,
   // placeholder identifiers so the SV parser processes them cleanly.
   // Placeholders are restored in the output after formatting.
   std::vector<std::pair<std::string, std::string>> qpp_subs;
-  std::string substituted;
-  std::string_view effective_text = text;
-  substituted = SubstituteQppInlineExprs(text, &qpp_subs);
-  if (!qpp_subs.empty()) effective_text = substituted;
+  std::string substituted = SubstituteQppInlineExprs(text, &qpp_subs);
+  std::string_view effective_text = qpp_subs.empty() ? text : substituted;
 
-  const auto analyzer = ParseWithStatus(effective_text, filename);
-  if (!analyzer.ok()) return analyzer.status();
+  // Scan for QPP if/else/pass blocks and choose the formatting strategy:
+  //   sequential : each branch formatted independently (preferred)
+  //   single-pass: both branches visible simultaneously (fallback)
+  // Sequential is used when there are else-branches and no nested blocks.
+  const std::vector<QppBlockBounds> qpp_blocks = ScanQppBlocks(effective_text);
+  const bool has_else =
+      std::any_of(qpp_blocks.begin(), qpp_blocks.end(),
+                  [](const QppBlockBounds &b) { return b.else_line >= 0; });
+  const bool use_sequential = has_else && !HasNestedQppBlocks(qpp_blocks);
 
-  const verible::TextStructureView &text_structure = analyzer->get()->Data();
   std::string formatted_text;
-  Status format_status = FormatVerilog(text_structure, filename, style,
-                                       &formatted_text, lines, control);
+  Status format_status;
+
+  if (use_sequential) {
+    // Pass 1: format if-masked text (else-branches replaced by blank lines).
+    const std::string if_masked =
+        MaskQppBranches(effective_text, /*keep_if=*/true, qpp_blocks);
+    const auto if_analyzer = ParseWithStatus(if_masked, filename);
+    if (!if_analyzer.ok()) return if_analyzer.status();
+    format_status = FormatVerilog(if_analyzer->get()->Data(), filename, style,
+                                  &formatted_text, lines, control);
+
+    // Pass 2: format else-masked text, extract else-branch content.
+    const std::string else_masked =
+        MaskQppBranches(effective_text, /*keep_if=*/false, qpp_blocks);
+    const auto else_analyzer = ParseWithStatus(else_masked, filename);
+    if (else_analyzer.ok()) {
+      std::string else_formatted;
+      // Best-effort: ignore status; proceed with whatever was formatted.
+      (void)FormatVerilog(else_analyzer->get()->Data(), filename, style,
+                          &else_formatted, lines, control);
+      // Merge: substitute formatted else-branch content into if-formatted.
+      formatted_text =
+          MergeQppBranches(formatted_text, ExtractElseSegments(else_formatted));
+    }
+    // If else-masked fails to parse (unbalanced branch), formatted_text
+    // retains the if-only result with blank else placeholders — acceptable
+    // degraded output.  The user can fix the unbalanced branch.
+  } else {
+    // Single-pass: both branches visible simultaneously.
+    const auto analyzer = ParseWithStatus(effective_text, filename);
+    if (!analyzer.ok()) return analyzer.status();
+    format_status = FormatVerilog(analyzer->get()->Data(), filename, style,
+                                  &formatted_text, lines, control);
+  }
+
   // Commit formatted text to the output stream, restoring QPP inline exprs.
   if (qpp_subs.empty()) {
     formatted_stream << formatted_text;
@@ -410,18 +627,27 @@ Status FormatVerilog(std::string_view text, std::string_view filename,
   // When formatting whole-file (no --lines are specified), ensure that
   // the formatting transformation is convergent after one iteration.
   //   format(format(text)) == format(text)
-  // Convergence is verified on placeholder text; placeholders are valid SV
-  // identifiers and format stably.
+  // For sequential formatting: convergence is verified on the if-masked text
+  // (a clean single-branch SV file).  Full merged convergence is a TODO.
   if (control.verify_convergence) {
+    // For sequential formatting, verify convergence on the if-masked text
+    // (a clean single-branch SV file).  Full merged convergence is a TODO.
+    std::string convergence_buf;
+    std::string_view cv_text = effective_text;
+    if (use_sequential) {
+      convergence_buf =
+          MaskQppBranches(effective_text, /*keep_if=*/true, qpp_blocks);
+      cv_text = convergence_buf;
+    }
     std::ostringstream reformat_stream;
     if (auto reformat_status =
-            ReformatVerilog(effective_text, formatted_text, filename, style,
+            ReformatVerilog(cv_text, formatted_text, filename, style,
                             reformat_stream, lines, control);
         !reformat_status.ok()) {
       return reformat_status;
     }
     const std::string &reformatted_text(reformat_stream.str());
-    return verible::ReformatMustMatch(effective_text, lines, formatted_text,
+    return verible::ReformatMustMatch(cv_text, lines, formatted_text,
                                       reformatted_text);
   }
   return format_status;
@@ -1133,18 +1359,37 @@ void Formatter::Emit(bool include_disabled, std::ostream &stream) const {
                               : line.Tokens().front().token->left(full_text);
     const std::string_view leading_whitespace(
         full_text.substr(position, front_offset - position));
-    FormatWhitespaceWithDisabledByteRanges(full_text, leading_whitespace,
-                                           disabled_ranges_, include_disabled,
-                                           stream, out_terminator);
 
-    // When front of first token is format-disabled, the previous call will
-    // already cover the space up to the front token, in which case,
-    // the left-indentation for this line should be suppressed to avoid
-    // being printed twice.
     if (!line.Tokens().empty()) {
+      const auto &front_token = line.Tokens().front();
+      // When leading_whitespace is empty and the front token has kPreserve
+      // spacing with a valid preserved_space_start, emit OriginalLeadingSpaces()
+      // directly instead of going through FormatWhitespaceWithDisabledByteRanges.
+      // FormatWhitespaceWithDisabledByteRanges inserts a spurious newline when
+      // leading_whitespace is empty and the position is not in disabled_ranges_
+      // (this fires for consecutive child partitions of a preserved
+      // kFitOnLineElseExpand partition), causing non-convergent formatting.
+      if (leading_whitespace.empty() &&
+          front_token.before.action == verible::SpacingDecision::kPreserve &&
+          front_token.before.preserved_space_start !=
+              verible::string_view_null_iterator()) {
+        stream << front_token.OriginalLeadingSpaces();
+      } else {
+        FormatWhitespaceWithDisabledByteRanges(full_text, leading_whitespace,
+                                               disabled_ranges_, include_disabled,
+                                               stream, out_terminator);
+      }
+      // When front of first token is format-disabled, the previous call will
+      // already cover the space up to the front token, in which case,
+      // the left-indentation for this line should be suppressed to avoid
+      // being printed twice.
       line.FormattedText(stream, !disabled_ranges_.Contains(front_offset),
                          include_token_p);
       position = line.Tokens().back().token->right(full_text);
+    } else {
+      FormatWhitespaceWithDisabledByteRanges(full_text, leading_whitespace,
+                                             disabled_ranges_, include_disabled,
+                                             stream, out_terminator);
     }
   }
 
