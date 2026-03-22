@@ -352,6 +352,11 @@ static std::string SubstituteQppInlineExprs(
       if (is_bare_ident || is_subscript) {
         std::string original(text.substr(i, j - i + 1));
         std::string placeholder = absl::StrCat("__qpp_", counter++, "__");
+        // Pad the placeholder to the same length as the original expression so
+        // that the formatter's column-budget calculations match the final output
+        // after restoration, preventing convergence oscillation on lines where
+        // the real expression is longer than the bare placeholder.
+        while (placeholder.size() < original.size()) placeholder += '_';
         subs->push_back({placeholder, original});
         result += placeholder;
         i = j + 1;
