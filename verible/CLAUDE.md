@@ -52,9 +52,31 @@ bazel test //verilog/formatting:token_annotator_test
 
 ## QPP formatter (Quadric-specific)
 
-The sequential QPP formatter formats each QPP `if/else` branch as an independent SV file.
-Key entry point: `verilog/tools/formatter/verilog_format_main.cc` — look for
-`MaskQppBranches`, `MergeQppBranches`, `SubstituteQppInlineExprs`.
+The formatter has two independent layers. Bugs and changes almost always belong to one
+or the other — identify which before looking for a fix.
+
+**Layer 1 — QPP (Python directive handling)**
+Entry point: `verilog/tools/formatter/verilog_format_main.cc`
+
+- `MaskQppBranches` — replaces `;if`/`;else`/`;pass` blocks with placeholder tokens,
+  saving each branch body. Hides QPP structure from the SV parser.
+- `SubstituteQppInlineExprs` — replaces backtick inline expressions with fixed-width
+  placeholders so the SV parser sees valid tokens.
+- Each branch is then formatted independently as a complete SV file.
+- `MergeQppBranches` / `RestoreQppInlineExprs` — stitches formatted branches back
+  together and restores QPP directives verbatim.
+
+If the output has misplaced QPP directives, wrong branch structure, or broken inline
+expressions, the bug is in this layer.
+
+**Layer 2 — SV formatting (verible core)**
+Entry point: `verilog/formatting/formatter.cc`
+
+Standard verible formatter — runs on each QPP branch independently. See the
+architectural notes below (`tree-unwrapper`, `token-annotator`) for how this layer works.
+
+If the output has wrong indentation, unexpected line breaks, or bad spacing within
+a branch, the bug is in this layer.
 
 ## Known fix: `` `MACRO(args)'(expr) `` cast-width line break
 
