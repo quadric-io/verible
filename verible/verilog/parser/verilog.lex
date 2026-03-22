@@ -209,9 +209,12 @@ EvalStringLiteral {UnterminatedEvalStringLiteral}`\"
  * positions like `always @(posedge `clk`)`, leaving invalid SV and causing
  * cascading parse failures in non-formatter tools. */
 QppInlineExpr `[^`\n(\[]*\[[^`\n]*`
-/* QPP nested-directive indentation: 0 or more groups of 4 literal spaces,
- * matching Python's 4-space indentation convention. */
-QppIndent ("    ")*
+/* QPP nested-directive indentation: any leading spaces or tabs.
+ * The CF codebase uses 1-, 2-, and 4-space indentation in QPP blocks.
+ * False-positive risk (SV '; identifier' at BOL) is negligible in practice
+ * since well-formed SV does not place null semicolons at the start of a line
+ * with code following on the same line. */
+QppIndent [ \t]*
 
 /* Preprocessor angle-bracket `include */
 UnterminatedAngleBracketString <{StringContent}

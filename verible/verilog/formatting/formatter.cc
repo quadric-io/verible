@@ -461,7 +461,8 @@ static bool IsQppKw(std::string_view line, std::string_view kw) {
   if (line.substr(i, kw.size()) != kw) return false;
   i += kw.size();
   return i >= line.size() || line[i] == ' ' || line[i] == '\t' ||
-         line[i] == ':' || line[i] == '(' || line[i] == '#' || line[i] == '\r';
+         line[i] == ':' || line[i] == '(' || line[i] == '#' || line[i] == '\r' ||
+         line[i] == ';';  // e.g. ';pass; # }' (Python null-statement after pass)
 }
 
 // Returns the QPP indentation level (number of 4-space groups between ';'
