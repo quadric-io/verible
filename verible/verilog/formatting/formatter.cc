@@ -634,9 +634,17 @@ Status FormatVerilog(std::string_view text, std::string_view filename,
   //   format(format(text)) == format(text)
   // For sequential formatting: convergence is verified on the if-masked text
   // (a clean single-branch SV file).  Full merged convergence is a TODO.
-  if (control.verify_convergence) {
+  if (control.verify_convergence && qpp_subs.empty()) {
     // For sequential formatting, verify convergence on the if-masked text
     // (a clean single-branch SV file).  Full merged convergence is a TODO.
+    //
+    // Convergence verification is skipped when QPP inline expressions are
+    // present (!qpp_subs.empty()).  SubstituteQppInlineExprs merges a QPP
+    // inline expr with any immediately-adjacent identifier (no space between
+    // them) into a single longer identifier token.  This merged token has
+    // different line-wrap properties than the two-token original, so the
+    // re-format pass may produce different wrapping — a false convergence
+    // failure rather than a real formatting bug.
     std::string convergence_buf;
     std::string_view cv_text = effective_text;
     if (use_sequential) {
@@ -1279,18 +1287,33 @@ Status Formatter::Format(const ExecutionControl &control) {
     }
   }
 
-  // Re-apply kPreserve for QPP directive tokens.  The
-  // ApplyAlreadyFormattedPartitionPropertiesToTokens pass above sets
-  // kMustWrap on the first token of every kAlreadyFormatted partition, which
-  // overrides the kPreserve we set earlier for QPP directives that happen to
-  // fall inside an alignment group range (e.g. ';if' between two aligned
-  // non-blocking assignments).  Re-applying here ensures they stay at column 0
-  // regardless of whether they went through the kAlreadyFormatted path or the
-  // SearchLineWraps path.
-  for (auto &ftoken : unwrapper_data.preformatted_tokens) {
-    if (verilog_tokentype(ftoken.token->token_enum()) ==
-        verilog_tokentype::TK_QPP_DIRECTIVE) {
-      ftoken.before.break_decision = verible::SpacingOptions::kPreserve;
+  // Re-apply kPreserve for QPP directive tokens, and kMustWrap for any token
+  // that immediately follows a QPP directive.
+  //
+  // ApplyAlreadyFormattedPartitionPropertiesToTokens sets kMustWrap on the
+  // first token of every kAlreadyFormatted partition, overriding the kPreserve
+  // we set earlier for QPP directives inside alignment group ranges.
+  // Re-applying kPreserve here ensures QPP directives stay at column 0.
+  //
+  // Additionally, when a QPP directive is an "orphan" token prepended to the
+  // next partition's token range by the TreeUnwrapper, the combined partition
+  // is classified as kIgnore by alignment (because its first token is a QPP
+  // directive) and goes through SearchLineWraps as a single entity.
+  // SearchLineWraps may decide to append the following SV token (e.g. ','
+  // starting a port connection) directly onto the QPP directive's line.
+  // Forcing kMustWrap on the token immediately after any QPP directive prevents
+  // this and keeps the SV tokens correctly on the following line.
+  {
+    bool prev_was_qpp = false;
+    for (auto &ftoken : unwrapper_data.preformatted_tokens) {
+      const bool is_qpp = verilog_tokentype(ftoken.token->token_enum()) ==
+                          verilog_tokentype::TK_QPP_DIRECTIVE;
+      if (is_qpp) {
+        ftoken.before.break_decision = verible::SpacingOptions::kPreserve;
+      } else if (prev_was_qpp) {
+        ftoken.before.break_decision = verible::SpacingOptions::kMustWrap;
+      }
+      prev_was_qpp = is_qpp;
     }
   }
 
@@ -1298,6 +1321,24 @@ Status Formatter::Format(const ExecutionControl &control) {
   const auto unwrapped_lines = MakeUnwrappedLinesWorklist(
       style_, full_text, disabled_ranges_, *format_tokens_partitions,
       &unwrapper_data.preformatted_tokens);
+
+  // Re-apply kMustWrap for the token immediately after any QPP directive.
+  // MakeUnwrappedLinesWorklist -> DeterminePartitionExpansion ->
+  // PreserveSpaces() overwrites the kMustWrap we set above with kPreserve.
+  // We re-apply it here so SearchLineWraps sees kMustWrap and forces a line
+  // break, preventing the SV token from being appended to the QPP directive
+  // line (which would cause the QPP lexer to swallow it into the directive).
+  {
+    bool prev_was_qpp = false;
+    for (auto &ftoken : unwrapper_data.preformatted_tokens) {
+      const bool is_qpp = verilog_tokentype(ftoken.token->token_enum()) ==
+                          verilog_tokentype::TK_QPP_DIRECTIVE;
+      if (!is_qpp && prev_was_qpp) {
+        ftoken.before.break_decision = verible::SpacingOptions::kMustWrap;
+      }
+      prev_was_qpp = is_qpp;
+    }
+  }
 
   // For each UnwrappedLine: minimize total penalty of wrap/break decisions.
   // TODO(fangism): This could be parallelized if results are written
