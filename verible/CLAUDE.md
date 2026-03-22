@@ -52,16 +52,14 @@ bazel test //verilog/formatting:token_annotator_test
 
 ## QPP formatter (Quadric-specific)
 
-The sequential QPP formatter is on branch `thomas-format-sequential` in quadric-io/verible.
-It formats each QPP `if/else` branch as an independent SV file. Key entry point:
-`verilog/tools/formatter/verilog_format_main.cc` — look for `MaskQppBranches`,
-`MergeQppBranches`, `SubstituteQppInlineExprs`.
+The sequential QPP formatter formats each QPP `if/else` branch as an independent SV file.
+Key entry point: `verilog/tools/formatter/verilog_format_main.cc` — look for
+`MaskQppBranches`, `MergeQppBranches`, `SubstituteQppInlineExprs`.
 
 ## Known fix: `` `MACRO(args)'(expr) `` cast-width line break
 
 `kMacroCall` used as casting type was always calling `VisitIndentedSection()`, creating a
-partition boundary that forced a line break before `'`. Fix committed on
-`thomas-format-sequential`:
+partition boundary that forced a line break before `'`.
 
 - `tree-unwrapper.cc`: detect `Context().DirectParentIs(NodeEnum::kCast)` and call
   `TraverseChildren()` instead of `VisitIndentedSection()`.
