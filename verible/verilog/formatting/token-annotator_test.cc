@@ -5354,8 +5354,9 @@ TEST(TokenAnnotatorTest, OriginalSpacingSensitiveTests) {
           ":",
           {NodeEnum::kDimensionRange},
           {NodeEnum::kDimensionRange},
-          // 0 spaces as this is an indentation, not spacing
-          {0, SpacingOptions::kUndecided},
+          // 1 space: ':' on a continuation line (after line wrap) preserves
+          // the range-style spacing so format(format(x)) == format(x).
+          {1, SpacingOptions::kUndecided},
       },
       {
           DefaultStyle,
