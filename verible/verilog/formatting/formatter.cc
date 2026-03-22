@@ -634,17 +634,7 @@ Status FormatVerilog(std::string_view text, std::string_view filename,
   //   format(format(text)) == format(text)
   // For sequential formatting: convergence is verified on the if-masked text
   // (a clean single-branch SV file).  Full merged convergence is a TODO.
-  if (control.verify_convergence && qpp_subs.empty()) {
-    // For sequential formatting, verify convergence on the if-masked text
-    // (a clean single-branch SV file).  Full merged convergence is a TODO.
-    //
-    // Convergence verification is skipped when QPP inline expressions are
-    // present (!qpp_subs.empty()).  SubstituteQppInlineExprs merges a QPP
-    // inline expr with any immediately-adjacent identifier (no space between
-    // them) into a single longer identifier token.  This merged token has
-    // different line-wrap properties than the two-token original, so the
-    // re-format pass may produce different wrapping — a false convergence
-    // failure rather than a real formatting bug.
+  if (control.verify_convergence) {
     std::string convergence_buf;
     std::string_view cv_text = effective_text;
     if (use_sequential) {
@@ -660,6 +650,26 @@ Status FormatVerilog(std::string_view text, std::string_view filename,
       return reformat_status;
     }
     const std::string &reformatted_text(reformat_stream.str());
+    // For files with QPP inline expressions, the substitution can merge a QPP
+    // expression with an adjacent identifier into a single long token.  This
+    // merged token may push lines near the column limit, exposing a known
+    // Verible formatter non-convergence where whitespace around operators (e.g.
+    // spaces in slice ranges like '[ N - 1 : 0 ]') oscillates between passes.
+    // Use lexical equivalence (whitespace-insensitive) for these files so that
+    // byte-for-byte whitespace oscillation is not reported as a false failure.
+    // Real structural convergence failures (tokens added or removed) are still
+    // caught.
+    if (!qpp_subs.empty()) {
+      std::ostringstream errstream;
+      if (verilog::FormatEquivalent(formatted_text, reformatted_text,
+                                    &errstream) != DiffStatus::kEquivalent) {
+        return absl::DataLossError(absl::StrCat(
+            "Re-formatted text is not lexically equivalent to formatted text; "
+            "formatting failed to converge!  Please file a bug.\n",
+            errstream.str()));
+      }
+      return format_status;
+    }
     return verible::ReformatMustMatch(cv_text, lines, formatted_text,
                                       reformatted_text);
   }
