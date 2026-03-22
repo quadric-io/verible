@@ -282,7 +282,8 @@ absl::Status FormatVerilog(const verible::TextStructureView &text_structure,
 // Both forms are detected by scanning for a closing backtick on the same line.
 // The content between backticks determines which form:
 //   - Pure identifier chars only → bare-ident
-//   - Contains '[' anywhere → subscript (Verilog macros never have closing backtick)
+//   - Contains '[' anywhere → subscript (Verilog macros never have closing
+//   backtick)
 //
 // SV compiler directives (`define, `ifdef, ...) have no closing backtick on
 // the same line and are left untouched.
@@ -350,8 +351,8 @@ static std::string SubstituteQppInlineExprs(
       // where the "closing" backtick actually belongs to a nested QPP token
       // inside the macro arguments. QPP Python ternary forms start with '('
       // (not an identifier), so they are still correctly matched.
-      bool is_subscript =
-          has_bracket && !(first_char_is_ident && has_paren_before_first_bracket);
+      bool is_subscript = has_bracket && !(first_char_is_ident &&
+                                           has_paren_before_first_bracket);
       // Also match arithmetic inline exprs like `NUM_GPNPU-1` — these have no
       // '[' so is_subscript is false, but they start with an identifier char,
       // contain no spaces (ruling out SV directives like `ifdef `USE_DW`),
@@ -383,9 +384,9 @@ static std::string SubstituteQppInlineExprs(
             literal_prefix + std::string(text.substr(i, j - i + 1));
         std::string placeholder = absl::StrCat("__qpp_", counter++, "__");
         // Pad the placeholder to the same length as the original expression so
-        // that the formatter's column-budget calculations match the final output
-        // after restoration, preventing convergence oscillation on lines where
-        // the real expression is longer than the bare placeholder.
+        // that the formatter's column-budget calculations match the final
+        // output after restoration, preventing convergence oscillation on lines
+        // where the real expression is longer than the bare placeholder.
         while (placeholder.size() < original.size()) placeholder += '_';
         subs->push_back({placeholder, original});
         result += placeholder;
@@ -460,8 +461,7 @@ static bool IsQppKw(std::string_view line, std::string_view kw) {
   if (line.substr(i, kw.size()) != kw) return false;
   i += kw.size();
   return i >= line.size() || line[i] == ' ' || line[i] == '\t' ||
-         line[i] == ':' || line[i] == '(' || line[i] == '#' ||
-         line[i] == '\r';
+         line[i] == ':' || line[i] == '(' || line[i] == '#' || line[i] == '\r';
 }
 
 // Returns the QPP indentation level (number of 4-space groups between ';'
@@ -514,7 +514,7 @@ static std::vector<QppBlockBounds> ScanQppBlocks(std::string_view text) {
 // end_line) of 'text' (0-based, end_line exclusive).
 // Used to distinguish a "real" else-branch from a blanked placeholder.
 static bool HasNonBlankLines(std::string_view text, int start_line,
-                              int end_line) {
+                             int end_line) {
   int line = 0;
   while (!text.empty() && line < end_line) {
     size_t nl = text.find('\n');
@@ -630,8 +630,8 @@ static std::string MaskQppBranches(std::string_view text, bool keep_if,
 // (e.g., 0 for top-level ';if', 1 for inner ';    if', etc.).  The matching
 // ';else:' and ';pass' at this indent level delimit each segment.  Blocks
 // at deeper indent levels are included verbatim in the segment.
-static std::vector<std::string> ExtractElseSegments(
-    const std::string &else_fmt, int target_indent) {
+static std::vector<std::string> ExtractElseSegments(const std::string &else_fmt,
+                                                    int target_indent) {
   std::vector<std::string> segments;
   // 'target_depth' counts ';if' directives at target_indent that we are
   // currently nested inside.  It starts at 0 (no such ';if' seen yet).
@@ -650,11 +650,13 @@ static std::vector<std::string> ExtractElseSegments(
     } else if ((IsQppKw(lv, "else") || IsQppKw(lv, "elif")) &&
                this_indent == target_indent) {
       if (target_depth == 0 && !in_else) {
-        // ;else: / ;elif at target level — begin collecting this block's segment.
+        // ;else: / ;elif at target level — begin collecting this block's
+        // segment.
         in_else = true;
         seg.clear();
       } else if (in_else) {
-        // Inner ;else:/;elif at target level (nested same-level block) — include.
+        // Inner ;else:/;elif at target level (nested same-level block) —
+        // include.
         seg += line;
       }
     } else if (IsQppKw(lv, "pass") && this_indent == target_indent) {
@@ -686,8 +688,8 @@ static std::vector<std::string> ExtractElseSegments(
 // point.  Inner ;else: at depth > 1 are already fully merged by the recursive
 // FormatVerilog call and are emitted verbatim.
 static std::string MergeQppBranches(const std::string &if_fmt,
-                                     const std::vector<std::string> &else_segs,
-                                     int target_indent) {
+                                    const std::vector<std::string> &else_segs,
+                                    int target_indent) {
   std::string result;
   // 'target_depth' counts ';if' at target_indent we are nested inside.
   // Injection point: ';{target_indent}else:' when target_depth == 1
@@ -777,9 +779,8 @@ Status FormatVerilog(std::string_view text, std::string_view filename,
     const std::string if_masked =
         MaskQppBranches(effective_text, /*keep_if=*/true, outermost_blocks);
     std::ostringstream if_stream;
-    format_status =
-        FormatVerilog(if_masked, filename, style, if_stream, lines,
-                      inner_control);
+    format_status = FormatVerilog(if_masked, filename, style, if_stream, lines,
+                                  inner_control);
     formatted_text = if_stream.str();
 
     // Pass 2: format else-masked text, extract else-branch content.
@@ -793,8 +794,7 @@ Status FormatVerilog(std::string_view text, std::string_view filename,
       const int target_indent =
           outermost_blocks.empty() ? 0 : outermost_blocks[0].indent;
       formatted_text = MergeQppBranches(
-          formatted_text,
-          ExtractElseSegments(else_stream.str(), target_indent),
+          formatted_text, ExtractElseSegments(else_stream.str(), target_indent),
           target_indent);
     }
     // If else-masked fails to parse (unbalanced branch), formatted_text
@@ -1632,8 +1632,9 @@ void Formatter::Emit(bool include_disabled, std::ostream &stream) const {
     if (!line.Tokens().empty()) {
       const auto &front_token = line.Tokens().front();
       // When leading_whitespace is empty and the front token has kPreserve
-      // spacing with a valid preserved_space_start, emit OriginalLeadingSpaces()
-      // directly instead of going through FormatWhitespaceWithDisabledByteRanges.
+      // spacing with a valid preserved_space_start, emit
+      // OriginalLeadingSpaces() directly instead of going through
+      // FormatWhitespaceWithDisabledByteRanges.
       // FormatWhitespaceWithDisabledByteRanges inserts a spurious newline when
       // leading_whitespace is empty and the position is not in disabled_ranges_
       // (this fires for consecutive child partitions of a preserved
@@ -1644,9 +1645,9 @@ void Formatter::Emit(bool include_disabled, std::ostream &stream) const {
               verible::string_view_null_iterator()) {
         stream << front_token.OriginalLeadingSpaces();
       } else {
-        FormatWhitespaceWithDisabledByteRanges(full_text, leading_whitespace,
-                                               disabled_ranges_, include_disabled,
-                                               stream, out_terminator);
+        FormatWhitespaceWithDisabledByteRanges(
+            full_text, leading_whitespace, disabled_ranges_, include_disabled,
+            stream, out_terminator);
       }
       // When front of first token is format-disabled, the previous call will
       // already cover the space up to the front token, in which case,
