@@ -359,7 +359,28 @@ static std::string SubstituteQppInlineExprs(
       bool is_arithmetic = first_char_is_ident && !has_bracket &&
                            !has_paren_before_first_bracket && !has_space;
       if (is_bare_ident || is_subscript || is_arithmetic) {
-        std::string original(text.substr(i, j - i + 1));
+        // Check for a Verilog based-literal prefix ('h, 'H, 'd, 'D, 'b, 'B,
+        // 'o, 'O) immediately before this backtick expression.  In that
+        // context the substituted placeholder would immediately follow 'h (or
+        // 'd etc.) and start with '_', which is not a legal first digit in a
+        // numeric literal.  Strip the prefix from result and absorb it into
+        // original so the placeholder is a plain identifier — valid SV in any
+        // expression context — and the literal base is restored together with
+        // the backtick expression (e.g. 'h`hash` → __qpp_N__ in text,
+        // __qpp_N__ → 'h`hash` in output).
+        std::string literal_prefix;
+        if (result.size() >= 2) {
+          char prev2 = result[result.size() - 2];
+          char prev1 = result[result.size() - 1];
+          if (prev2 == '\'' &&
+              (prev1 == 'h' || prev1 == 'H' || prev1 == 'd' || prev1 == 'D' ||
+               prev1 == 'b' || prev1 == 'B' || prev1 == 'o' || prev1 == 'O')) {
+            literal_prefix = {prev2, prev1};
+            result.resize(result.size() - 2);
+          }
+        }
+        std::string original =
+            literal_prefix + std::string(text.substr(i, j - i + 1));
         std::string placeholder = absl::StrCat("__qpp_", counter++, "__");
         // Pad the placeholder to the same length as the original expression so
         // that the formatter's column-budget calculations match the final output

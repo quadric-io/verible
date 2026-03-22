@@ -332,6 +332,139 @@ TEST(QppFormatterTest, NestedSequentialBothElseBranchesPreserved) {
   for (const auto &tc : kCases) RunFormatterTest(tc, style);
 }
 
+// ---------------------------------------------------------------------------
+// ;elif directive
+//
+// ;elif is treated identically to ;else: in block scanning and merging.
+// Each branch must be preserved and the SV in each branch indented normally.
+// ---------------------------------------------------------------------------
+TEST(QppFormatterTest, ElifBranchFormatted) {
+  const FormatStyle style = DefaultStyle();
+  static constexpr FormatterTestCase kCases[] = {
+      // ;if / ;elif / ;else: / ;pass — three branches, each with different
+      // bit-width so the formatter's alignment is observable.
+      {
+          "module m;\n"
+          ";if (config['W'] == 32):\n"
+          "logic [31:0] data;\n"
+          ";elif (config['W'] == 16):\n"
+          "logic [15:0] data;\n"
+          ";else:\n"
+          "logic [7:0] data;\n"
+          ";pass\n"
+          "endmodule\n",
+          "module m;\n"
+          ";if (config['W'] == 32):\n"
+          "  logic [31:0] data;\n"
+          ";elif (config['W'] == 16):\n"
+          "  logic [15:0] data;\n"
+          ";else:\n"
+          "  logic [ 7:0] data;\n"
+          ";pass\n"
+          "endmodule\n",
+      },
+  };
+  for (const auto &tc : kCases) RunFormatterTest(tc, style);
+}
+
+// ---------------------------------------------------------------------------
+// Arithmetic QPP inline expressions: `ident-expr`
+//
+// Expressions like `NUM_GPNPU-1` start with an identifier character, contain
+// no brackets, and no spaces.  They are classified as arithmetic inline exprs
+// and substituted with a placeholder before parsing, then restored.
+// ---------------------------------------------------------------------------
+TEST(QppFormatterTest, ArithmeticInlineExprInBitRange) {
+  const FormatStyle style = DefaultStyle();
+  static constexpr FormatterTestCase kCases[] = {
+      // `NUM_GPNPU-1` as the MSB of a bit-range.  After substitution the SV
+      // is `logic [__qpp_0__:0] data;` which is valid and formats normally.
+      {
+          "module m;\n"
+          "logic [`NUM_GPNPU-1`:0] data;\n"
+          "endmodule\n",
+          "module m;\n"
+          "  logic [`NUM_GPNPU-1`:0] data;\n"
+          "endmodule\n",
+      },
+  };
+  for (const auto &tc : kCases) RunFormatterTest(tc, style);
+}
+
+// ---------------------------------------------------------------------------
+// Based-literal prefix before a QPP inline expression: 'h`expr`
+//
+// When a Verilog based-literal prefix ('h, 'd, 'b, 'o) immediately precedes
+// a backtick expression, the prefix must be absorbed into the substitution.
+// Without this, the placeholder becomes 'h__qpp_0__ which is an invalid SV
+// hex literal (underscore is not a valid leading hex digit).
+// ---------------------------------------------------------------------------
+TEST(QppFormatterTest, HexLiteralPrefixBeforeInlineExpr) {
+  const FormatStyle style = DefaultStyle();
+  static constexpr FormatterTestCase kCases[] = {
+      // 'h`hash_val` — prefix 'h is stripped from the result before
+      // substitution and included in the original token, so the placeholder
+      // is a plain identifier.
+      {
+          "module m;\n"
+          "localparam P = 'h`hash_val`;\n"
+          "endmodule\n",
+          "module m;\n"
+          "  localparam P = 'h`hash_val`;\n"
+          "endmodule\n",
+      },
+  };
+  for (const auto &tc : kCases) RunFormatterTest(tc, style);
+}
+
+// ---------------------------------------------------------------------------
+// Idempotency: ':' on a continuation line in a bit-range
+//
+// When a bit-range is too wide to fit on one line the formatter may place ':'
+// at the start of a continuation line.  On a second format pass the original
+// leading whitespace for that ':' token contains a newline; ExcessSpaces()
+// returns 0 in that case, which previously caused the formatter to collapse
+// the space before ':' to 0, breaking idempotency.  The fix preserves 1
+// space before ':' whenever it appears on a continuation line.
+// ---------------------------------------------------------------------------
+TEST(QppFormatterTest, BitRangeWrappedLineIsIdempotent) {
+  FormatStyle style = DefaultStyle();
+  style.column_limit = 60;
+  style.wrap_spaces = 4;
+  // Regression: a bit-range declaration that just exceeds the column limit
+  // wraps the trailing identifier to a continuation line.  On a second format
+  // pass the already-formatted output must be left unchanged.
+  // Before the ExcessSpaces() fix, ':' in a range context with a preceding
+  // newline in its original leading whitespace was incorrectly given 0 spaces,
+  // causing format(format(x)) != format(x).
+  static constexpr FormatterTestCase kCases[] = {
+      // First pass wraps data_output_signal; ':' stays on the same line as
+      // the bounds.  Second pass must produce identical output.
+      {
+          "module m;\n"
+          "logic [some_very_long_parameter_name_here - 1 : 0] "
+          "data_output_signal;\n"
+          "endmodule\n",
+          "module m;\n"
+          "  logic [some_very_long_parameter_name_here - 1 : 0]\n"
+          "      data_output_signal;\n"
+          "endmodule\n",
+      },
+      // Input is already in the wrapped form — must be stable on second pass.
+      {
+          "module m;\n"
+          "  logic [some_very_long_parameter_name_here - 1 : 0]\n"
+          "      data_output_signal;\n"
+          "endmodule\n",
+          "module m;\n"
+          "  logic [some_very_long_parameter_name_here - 1 : 0]\n"
+          "      data_output_signal;\n"
+          "endmodule\n",
+      },
+  };
+  for (const auto &tc : kCases) RunFormatterTest(tc, style);
+}
+
 }  // namespace
 }  // namespace formatter
 }  // namespace verilog
