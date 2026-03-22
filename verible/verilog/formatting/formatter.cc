@@ -314,6 +314,7 @@ static std::string SubstituteQppInlineExprs(
     size_t j = i + 1;
     bool has_bracket = false;
     bool has_paren_before_first_bracket = false;
+    bool has_space = false;
     bool first_char_is_ident =
         (j < text.size() &&
          (text[j] == '_' || (text[j] >= 'A' && text[j] <= 'Z') ||
@@ -323,6 +324,8 @@ static std::string SubstituteQppInlineExprs(
         has_bracket = true;
       } else if (text[j] == '(' && !has_bracket) {
         has_paren_before_first_bracket = true;
+      } else if (text[j] == ' ' || text[j] == '\t') {
+        has_space = true;
       }
       ++j;
     }
@@ -349,7 +352,13 @@ static std::string SubstituteQppInlineExprs(
       // (not an identifier), so they are still correctly matched.
       bool is_subscript =
           has_bracket && !(first_char_is_ident && has_paren_before_first_bracket);
-      if (is_bare_ident || is_subscript) {
+      // Also match arithmetic inline exprs like `NUM_GPNPU-1` — these have no
+      // '[' so is_subscript is false, but they start with an identifier char,
+      // contain no spaces (ruling out SV directives like `ifdef `USE_DW`),
+      // and are not Verilog macro calls (no paren before first bracket).
+      bool is_arithmetic = first_char_is_ident && !has_bracket &&
+                           !has_paren_before_first_bracket && !has_space;
+      if (is_bare_ident || is_subscript || is_arithmetic) {
         std::string original(text.substr(i, j - i + 1));
         std::string placeholder = absl::StrCat("__qpp_", counter++, "__");
         // Pad the placeholder to the same length as the original expression so
@@ -462,7 +471,7 @@ static std::vector<QppBlockBounds> ScanQppBlocks(std::string_view text) {
     const int indent = GetQppIndent(line);
     if (IsQppKw(line, "if")) {
       stack.push_back({line_no, -1, -1, indent});
-    } else if (IsQppKw(line, "else")) {
+    } else if (IsQppKw(line, "else") || IsQppKw(line, "elif")) {
       if (!stack.empty() && stack.back().indent == indent &&
           stack.back().else_line == -1)
         stack.back().else_line = line_no;
@@ -617,13 +626,14 @@ static std::vector<std::string> ExtractElseSegments(
     if (IsQppKw(lv, "if") && this_indent == target_indent) {
       ++target_depth;
       if (in_else) seg += line;
-    } else if (IsQppKw(lv, "else") && this_indent == target_indent) {
+    } else if ((IsQppKw(lv, "else") || IsQppKw(lv, "elif")) &&
+               this_indent == target_indent) {
       if (target_depth == 0 && !in_else) {
-        // ;else: at target level — begin collecting this block's segment.
+        // ;else: / ;elif at target level — begin collecting this block's segment.
         in_else = true;
         seg.clear();
       } else if (in_else) {
-        // Inner ;else: at target level (nested same-level block) — include.
+        // Inner ;else:/;elif at target level (nested same-level block) — include.
         seg += line;
       }
     } else if (IsQppKw(lv, "pass") && this_indent == target_indent) {
@@ -673,14 +683,15 @@ static std::string MergeQppBranches(const std::string &if_fmt,
     if (IsQppKw(lv, "if") && this_indent == target_indent) {
       ++target_depth;
       result += line;
-    } else if (IsQppKw(lv, "else") && this_indent == target_indent) {
+    } else if ((IsQppKw(lv, "else") || IsQppKw(lv, "elif")) &&
+               this_indent == target_indent) {
       result += line;
       if (target_depth == 1 && !in_else_section) {
         // Directly inside one outermost ;if — injection point.
         in_else_section = true;
       }
-      // target_depth > 1: inner else at target level, already merged — emit
-      // verbatim (already done by result += line above).
+      // target_depth > 1: inner else/elif at target level, already merged —
+      // emit verbatim (already done by result += line above).
     } else if (IsQppKw(lv, "pass") && this_indent == target_indent) {
       if (in_else_section) {
         if (else_seg_idx < else_segs.size())
