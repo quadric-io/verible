@@ -1177,6 +1177,16 @@ Status Formatter::Format(const ExecutionControl &control) {
       DisableSyntaxBasedRanges(&disabled_ranges_, *root, style_, full_text);
     }
 
+    // QPP directive lines (;if, ;else:, ;pass) must stay at column 0.
+    // Setting kPreserve here causes FormattedExcerpt::FormattedText to skip
+    // IndentationSpaces() for the front token of any QPP directive partition.
+    for (auto &ftoken : unwrapper_data.preformatted_tokens) {
+      if (verilog_tokentype(ftoken.token->token_enum()) ==
+          verilog_tokentype::TK_QPP_DIRECTIVE) {
+        ftoken.before.break_decision = verible::SpacingOptions::kPreserve;
+      }
+    }
+
     // Disable formatting ranges.
     verible::PreserveSpacesOnDisabledTokenRanges(
         &unwrapper_data.preformatted_tokens, disabled_ranges_, full_text);
@@ -1261,6 +1271,21 @@ Status Formatter::Format(const ExecutionControl &control) {
         // Move to the parent which is now a leaf
         node_iter = verible::VectorTreeLeavesIterator(parent);
       }
+    }
+  }
+
+  // Re-apply kPreserve for QPP directive tokens.  The
+  // ApplyAlreadyFormattedPartitionPropertiesToTokens pass above sets
+  // kMustWrap on the first token of every kAlreadyFormatted partition, which
+  // overrides the kPreserve we set earlier for QPP directives that happen to
+  // fall inside an alignment group range (e.g. ';if' between two aligned
+  // non-blocking assignments).  Re-applying here ensures they stay at column 0
+  // regardless of whether they went through the kAlreadyFormatted path or the
+  // SearchLineWraps path.
+  for (auto &ftoken : unwrapper_data.preformatted_tokens) {
+    if (verilog_tokentype(ftoken.token->token_enum()) ==
+        verilog_tokentype::TK_QPP_DIRECTIVE) {
+      ftoken.before.break_decision = verible::SpacingOptions::kPreserve;
     }
   }
 
