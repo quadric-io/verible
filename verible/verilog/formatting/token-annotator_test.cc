@@ -420,7 +420,7 @@ TEST(TokenAnnotatorTest, AnnotateFormattingInfoTest) {
        {{0, SpacingOptions::kUndecided},
         {0, SpacingOptions::kUndecided},
         {0, SpacingOptions::kUndecided},
-        {0, SpacingOptions::kUndecided},
+        {0, SpacingOptions::kMustAppend},  // ')' before cast `'` must not break
         {0, SpacingOptions::kUndecided},
         {0, SpacingOptions::kUndecided},
         {0, SpacingOptions::kUndecided}},

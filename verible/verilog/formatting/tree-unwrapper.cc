@@ -1123,8 +1123,14 @@ void TreeUnwrapper::SetIndentationsAndCreatePartitions(
       // This would require using layout optimizer for structures wrapping the
       // calls.
 
-      if (is_nested_call() &&
-          HasContextHint(ContextHint::kInsideStandaloneMacroCall)) {
+      if (Context().DirectParentIs(NodeEnum::kCast)) {
+        // Macro call used as casting_type in a type cast expression,
+        // e.g. `MACRO(args)'(expr). Traverse without creating a new partition
+        // so the cast operator `'` stays on the same line.
+        VLOG(4) << "kMacroCall: cast type";
+        TraverseChildren(node);
+      } else if (is_nested_call() &&
+                 HasContextHint(ContextHint::kInsideStandaloneMacroCall)) {
         VLOG(4) << "kMacroCall: nested";
         VisitIndentedSection(node, indent, PartitionPolicyEnum::kStack);
       } else if (is_standalone_call()) {

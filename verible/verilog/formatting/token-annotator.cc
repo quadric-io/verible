@@ -903,6 +903,17 @@ static WithReason<SpacingOptions> BreakDecisionBetween(
             "')'-'begin' tokens should be together on one line."};
   }
 
+  // Cast operator `'` must not be separated from its preceding type expression.
+  // e.g. `MACRO(args)'(expr) or (expr)'(value) -- the `'` must stay with the
+  // closing `)` of the type/width expression on the same line.
+  if (right.TokenEnum() == '\'') {
+    if (left.TokenEnum() == ')' ||
+        left.TokenEnum() == verilog_tokentype::MacroCallCloseToEndLine) {
+      return {SpacingOptions::kMustAppend,
+              "Cast operator must not be separated from its type expression"};
+    }
+  }
+
   if (left.TokenEnum() == verilog_tokentype::MacroCallCloseToEndLine) {
     if (!IsComment(FormatTokenType(right.format_token_enum)) &&
         !IsAnySemicolon(right) && !InRangeLikeContext(left_context)) {

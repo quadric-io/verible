@@ -359,6 +359,15 @@ static constexpr FormatterTestCase kFormatterTestCases[] = {
      "`FOOOOOO();\n", "`FOOOOOO();\n"},
     {// macro call with no args and semicolon separated by space
      "`FOOOOOO() ;\n", "`FOOOOOO();\n"},
+    {// macro call used as cast width: `MACRO(arg)'(expr) must not be split
+     "module m;\n"
+     "  logic [7:0] a;\n"
+     "  assign a = `FOO(X)'(b);\n"
+     "endmodule\n",
+     "module m;\n"
+     "  logic [7:0] a;\n"
+     "  assign a = `FOO(X)'(b);\n"
+     "endmodule\n"},
     {// macro call with comments in argument list
      "`FOO(aa, //aa\nbb , // bb\ncc)\n",
      "`FOO(aa,  //aa\n"
