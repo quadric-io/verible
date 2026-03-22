@@ -287,6 +287,51 @@ TEST(QppFormatterTest, BareIdentInlineExprPreservedInContext) {
   for (const auto &tc : kCases) RunFormatterTest(tc, style);
 }
 
+// ---------------------------------------------------------------------------
+// Nested QPP sequential formatting
+//
+// Outer ;if/;else:/;pass (indent 0) containing inner ;if/;else:/;pass (indent
+// 1, four-space Python indent).  Both branches must be preserved in the output.
+// The inner else-branch (`logic [3:0] b;`) was lost before the fix because
+// ExtractElseSegments/MergeQppBranches used nesting depth instead of Python
+// indent level, and MaskQppBranches produced fake blocks when the inner ;if
+// was blanked.
+// ---------------------------------------------------------------------------
+TEST(QppFormatterTest, NestedSequentialBothElseBranchesPreserved) {
+  const FormatStyle style = DefaultStyle();
+  static constexpr FormatterTestCase kCases[] = {
+      // Outer else: `logic [15:0] a;`.  Inner else: `logic [3:0] b;`.
+      // Both must appear in the merged output.
+      {
+          "module m;\n"
+          ";if (config['OUTER']):\n"
+          "logic [7:0] a;\n"
+          ";    if (config['INNER']):\n"
+          "logic [7:0] b;\n"
+          ";    else:\n"
+          "logic [3:0] b;\n"
+          ";    pass\n"
+          ";else:\n"
+          "logic [15:0] a;\n"
+          ";pass\n"
+          "endmodule\n",
+          "module m;\n"
+          ";if (config['OUTER']):\n"
+          "  logic [7:0] a;\n"
+          ";    if (config['INNER']):\n"
+          "  logic [7:0] b;\n"
+          ";    else:\n"
+          "  logic [3:0] b;\n"
+          ";    pass\n"
+          ";else:\n"
+          "  logic [15:0] a;\n"
+          ";pass\n"
+          "endmodule\n",
+      },
+  };
+  for (const auto &tc : kCases) RunFormatterTest(tc, style);
+}
+
 }  // namespace
 }  // namespace formatter
 }  // namespace verilog
