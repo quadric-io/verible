@@ -40,9 +40,9 @@ diff --strip-trailing-cr "${MY_OUTPUT_FILE}" "${MY_INPUT_FILE}" || exit 2
 [[ "$?" -eq 0 ]] || exit 3
 diff --strip-trailing-cr "${MY_OUTPUT_FILE}" "${MY_INPUT_FILE}" || exit 4
 
-# Default is failsafe_success=true.
+# Default is failsafe_success=false: expect error exit and original output.
 "${formatter}" "${MY_INPUT_FILE}" > "${MY_OUTPUT_FILE}"
-[[ "$?" -eq 0 ]] || exit 5
+[[ "$?" -eq 1 ]] || exit 5
 diff --strip-trailing-cr "${MY_OUTPUT_FILE}" "${MY_INPUT_FILE}" || exit 6
 
 echo "PASS"
