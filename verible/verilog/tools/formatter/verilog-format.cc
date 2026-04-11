@@ -101,7 +101,7 @@ ABSL_FLAG(LineRanges, lines, {},
           "Specific lines to format, 1-based, comma-separated, inclusive N-M "
           "ranges, N is short for N-N.  By default, left unspecified, "
           "all lines are enabled for formatting.  (repeatable, cumulative)");
-ABSL_FLAG(bool, failsafe_success, true,
+ABSL_FLAG(bool, failsafe_success, false,
           "If true, always exit with 0 status, even if there were input errors "
           "or internal errors.  In all error conditions, the original text is "
           "always preserved.  This is useful in deploying services where "

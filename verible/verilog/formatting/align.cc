@@ -106,8 +106,15 @@ static bool IgnoreCommentsAndPreprocessingDirectives(
   if (TokensAreAllCommentsOrAttributes(token_range)) return true;
 
   // ignore partitions belonging to preprocessing directives
-  return IsPreprocessorKeyword(
-      verilog_tokentype(token_range.front().TokenEnum()));
+  if (IsPreprocessorKeyword(verilog_tokentype(token_range.front().TokenEnum())))
+    return true;
+
+  // ignore partitions starting with a QPP directive (embedded Python line)
+  if (verilog_tokentype(token_range.front().TokenEnum()) ==
+      verilog_tokentype::TK_QPP_DIRECTIVE)
+    return true;
+
+  return false;
 }
 
 static bool IgnoreWithinPortDeclarationPartitionGroup(

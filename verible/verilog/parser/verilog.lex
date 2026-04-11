@@ -317,6 +317,17 @@ PragmaEndProtected {Pragma}{Space}+protect{Space}+end_protected
 <INITIAL>^;{QppIndent}#[^\n]* { UpdateLocation(); return TK_QPP_DIRECTIVE; }
 <INITIAL>^;{QppIndent}[A-Za-z_][A-Za-z0-9_]*[ \t:=][^\n]* { UpdateLocation(); return TK_QPP_DIRECTIVE; }
 <INITIAL>^;{QppIndent}[A-Za-z_][A-Za-z0-9_]*$ { UpdateLocation(); return TK_QPP_DIRECTIVE; }
+  /* Rule 4: Python continuation lines whose first non-indent char is not a
+   * letter, underscore, or '#' — e.g. ';    ['arg1', 'arg2'],' (list literal
+   * continuation) or ';).method()' (closing a multi-line call).  These arise
+   * in multi-statement QPP blocks like:
+   *   ;hash = subprocess.check_output(
+   *   ;    ['git', 'describe', ...],
+   *   ;    text=True
+   *   ;).strip()
+   * The {QppIndent} constraint still prevents false-positive matches on
+   * plain SV lines that start with a ';' statement terminator. */
+<INITIAL>^;{QppIndent}[\[)][^\n]* { UpdateLocation(); return TK_QPP_DIRECTIVE; }
 
   /* QPP inline expressions: backtick-delimited Python expressions that expand
    * to SV identifiers/values.  Must precede MacroIdentifier so the greedy

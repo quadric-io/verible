@@ -426,11 +426,18 @@ static WithReason<int> SpacesRequiredBetween(
 
     // Spacing in ranges
     if (InRangeLikeContext(right_context)) {
-      int spaces = right.OriginalLeadingSpaces().length();
+      const auto orig = right.OriginalLeadingSpaces();
+      int spaces = static_cast<int>(orig.length());
       if (spaces > 1) {
         // ExcessSpaces returns 0 if there was a newline - prevents
-        // counting indentation as spaces
-        spaces = right.ExcessSpaces() ? 1 : 0;
+        // counting indentation as spaces.  But if ':' is on a continuation
+        // line (original whitespace contains newline), preserve 1 space so
+        // formatting is idempotent: "[X - 1\n      : 0]" stays ": 0]".
+        if (orig.find('\n') != std::string_view::npos) {
+          spaces = 1;
+        } else {
+          spaces = right.ExcessSpaces() ? 1 : 0;
+        }
       }
       return {spaces, "Limit spaces before ':' in bit slice to 0 or 1"};
     }
@@ -894,6 +901,17 @@ static WithReason<SpacingOptions> BreakDecisionBetween(
   if ((left.TokenEnum() == ')') && (right.TokenEnum() == TK_begin)) {
     return {SpacingOptions::kMustAppend,
             "')'-'begin' tokens should be together on one line."};
+  }
+
+  // Cast operator `'` must not be separated from its preceding type expression.
+  // e.g. `MACRO(args)'(expr) or (expr)'(value) -- the `'` must stay with the
+  // closing `)` of the type/width expression on the same line.
+  if (right.TokenEnum() == '\'') {
+    if (left.TokenEnum() == ')' ||
+        left.TokenEnum() == verilog_tokentype::MacroCallCloseToEndLine) {
+      return {SpacingOptions::kMustAppend,
+              "Cast operator must not be separated from its type expression"};
+    }
   }
 
   if (left.TokenEnum() == verilog_tokentype::MacroCallCloseToEndLine) {
