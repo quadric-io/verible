@@ -24,6 +24,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "absl/base/attributes.h"
@@ -417,39 +418,57 @@ static std::string RestoreQppInlineExprs(
 
 // ===== QPP sequential branch formatting =====
 //
-// When a QPP if/else block is visible to the parser simultaneously, both
+// When a QPP if/elif/else block is visible to the parser simultaneously, all
 // branches contribute tokens to the combined SV token stream.  This causes:
 //   - begin/end imbalance   (if one branch opens a block the other doesn't)
 //   - duplicate terminators (both branches close a statement with ';')
 //
-// The sequential approach formats each branch independently:
+// The sequential approach formats each arm independently:
 //   ;if cond:
-//     [if-branch SV]    ← formatted using if-masked text
+//     [arm 0 SV]   ← formatted in pass 0
+//   ;elif cond2:
+//     [arm 1 SV]   ← formatted in pass 1
 //   ;else:
-//     [else-branch SV]  ← formatted using else-masked text
+//     [arm 2 SV]   ← formatted in pass 2
 //   ;pass
 //
-// We produce two masked versions of the file:
-//   if-masked   : else-branch lines replaced by blank lines
-//   else-masked : if-branch  lines replaced by blank lines
-// format each masked text (both are valid SV), then merge by substituting
-// the formatted else-branch content from else-masked into if-formatted.
+// Pass k formats a masked copy of the file in which every masked block keeps
+// only the content of its arm k (or its last arm, when it has fewer arms):
+// all other lines of the block become blank lines (so line numbers are
+// preserved), and the arm's own directive line (;if / ;elif / ;else:) and the
+// block's ;pass line are replaced by unique begin/end marker directives
+// (';# <marker>'), so the arm sits between directive lines as in the source.
+// The marker lines are lexed as QPP directives exactly like the lines they
+// replace, so every masked text is
+// a single-arm view that parses like a real QPP expansion, and the formatted
+// arm is recovered from between the markers.  The output is rebuilt from
+// pass 0 by replacing each marked region with the original directive lines
+// and the formatted content of every arm.
 //
-// Constraint: each branch must leave the parser at the same depth as the
-// other.  This is the natural invariant for well-formed QPP code.  If the
-// else-masked text fails to parse, we fall back to single-pass.
+// Every arm is formatted in its own pass, so no two arms of the same block
+// are ever visible together, blocks at different QPP indent levels are
+// handled uniformly, and nothing is dropped on the way back: if any pass
+// fails, or a marker cannot be found, the whole file falls back to
+// single-pass formatting (all arms visible), and a final whitespace-
+// insensitive check rejects any output that does not carry exactly the
+// non-whitespace content of the input.
 //
 // Nested QPP blocks (a block whose line range is strictly inside another
-// block's range) are handled by masking only the outermost blocks and calling
-// FormatVerilog(string_view) recursively; the inner blocks are formatted
-// sequentially on the recursive call(s).
+// masked block's range) are handled by masking only the outermost blocks and
+// calling FormatVerilog(string_view) recursively; the inner blocks are
+// formatted sequentially on the recursive call(s).  Marker directives contain
+// no ';if', so a recursive call never re-detects a block that is being masked.
 
 // Line-number bounds of a QPP if/else/pass block (0-based line indices).
 struct QppBlockBounds {
   int if_line;    // line index of the ;if directive
-  int else_line;  // -1 if the block has no ;else branch
+  int else_line;  // first ;elif/;else: line, -1 if the block has no branch
   int pass_line;  // line index of the ;pass directive
   int indent;     // QPP indentation level (0 = column 0, 1 = 4 spaces, etc.)
+  // Directive line of every arm, in order: [0] is the ;if line, followed by
+  // each ;elif / ;else: line at the same indent.  Arm i's content is the
+  // lines strictly between arm_lines[i] and arm_lines[i+1] (or pass_line).
+  std::vector<int> arm_lines;
 };
 
 // Returns true if 'line' is a QPP directive whose first keyword matches 'kw'.
@@ -495,11 +514,12 @@ static std::vector<QppBlockBounds> ScanQppBlocks(std::string_view text) {
         (nl == std::string_view::npos) ? text : text.substr(0, nl);
     const int indent = GetQppIndent(line);
     if (IsQppKw(line, "if")) {
-      stack.push_back({line_no, -1, -1, indent});
+      stack.push_back({line_no, -1, -1, indent, {line_no}});
     } else if (IsQppKw(line, "else") || IsQppKw(line, "elif")) {
-      if (!stack.empty() && stack.back().indent == indent &&
-          stack.back().else_line == -1)
-        stack.back().else_line = line_no;
+      if (!stack.empty() && stack.back().indent == indent) {
+        if (stack.back().else_line == -1) stack.back().else_line = line_no;
+        stack.back().arm_lines.push_back(line_no);
+      }
     } else if (IsQppKw(line, "pass")) {
       if (!stack.empty() && stack.back().indent == indent) {
         stack.back().pass_line = line_no;
@@ -591,33 +611,18 @@ static std::vector<std::string> SplitLines(std::string_view text) {
   return result;
 }
 
-// Return a copy of 'text' with branch content replaced by bare newlines for
-// the non-selected side of each QPP block.
-//   keep_if=true  : blank lines between ;else: and ;pass (keep if-branch)
-//                   The ;if directive line is kept so that ScanQppBlocks in
-//                   the recursive call can still detect these blocks (but
-//                   will skip them because the else content is blank).
-//   keep_if=false : blank the ;if directive line AND the if-branch, keeping
-//                   only the else-branch content and the ;else: / ;pass lines.
-//                   Blanking the ;if line prevents ScanQppBlocks from
-//                   detecting these blocks in the recursive call, which
-//                   would otherwise cause infinite recursion (the else-branch
-//                   content is non-blank, triggering sequential again).
-static std::string MaskQppBranches(std::string_view text, bool keep_if,
+// Return a copy of 'text' in which the content of every arm after the first
+// (each ;elif / ;else: branch, including those directive lines) is replaced by
+// bare newlines for each block in 'blocks'.  The ;if and ;pass directive lines
+// are kept.  This is the arm-0 view used as the original text for the
+// convergence check.
+static std::string MaskQppElseArms(std::string_view text,
                                    const std::vector<QppBlockBounds> &blocks) {
   std::vector<std::string> lines = SplitLines(text);
   std::vector<bool> blank(lines.size(), false);
   for (const auto &b : blocks) {
-    if (keep_if) {
-      if (b.else_line >= 0)
-        for (int i = b.else_line + 1; i < b.pass_line; ++i) blank[i] = true;
-    } else {
-      // Blank the ;if directive line itself (prevents re-detection by
-      // ScanQppBlocks in the recursive FormatVerilog call).
-      blank[b.if_line] = true;
-      int end = (b.else_line >= 0) ? b.else_line : b.pass_line;
-      for (int i = b.if_line + 1; i < end; ++i) blank[i] = true;
-    }
+    if (b.else_line >= 0)
+      for (int i = b.else_line + 1; i < b.pass_line; ++i) blank[i] = true;
   }
   std::string result;
   for (size_t i = 0; i < lines.size(); ++i)
@@ -625,118 +630,235 @@ static std::string MaskQppBranches(std::string_view text, bool keep_if,
   return result;
 }
 
-// Extract the formatted else-branch content from 'else_fmt'.
-// Returns one string per block at 'target_indent' that has an else-branch,
-// in document order.  Directives at other indent levels are treated as
-// regular content (either context or nested inner-block directives).
-//
-// 'target_indent' is the Python indent level of the blocks being processed
-// (e.g., 0 for top-level ';if', 1 for inner ';    if', etc.).  The matching
-// ';else:' and ';pass' at this indent level delimit each segment.  Blocks
-// at deeper indent levels are included verbatim in the segment.
-static std::vector<std::string> ExtractElseSegments(const std::string &else_fmt,
-                                                    int target_indent) {
-  std::vector<std::string> segments;
-  // 'target_depth' counts ';if' directives at target_indent that we are
-  // currently nested inside.  It starts at 0 (no such ';if' seen yet).
-  // A segment begins when we see ';{target_indent}else:' at target_depth==0,
-  // and ends at the matching ';{target_indent}pass'.
-  int target_depth = 0;
-  bool in_else = false;
-  std::string seg;
-  for (const auto &line : SplitLines(else_fmt)) {
-    std::string_view lv = line;
-    if (!lv.empty() && lv.back() == '\n') lv.remove_suffix(1);
-    const int this_indent = GetQppIndent(lv);
-    if (IsQppKw(lv, "if") && this_indent == target_indent) {
-      ++target_depth;
-      if (in_else) seg += line;
-    } else if ((IsQppKw(lv, "else") || IsQppKw(lv, "elif")) &&
-               this_indent == target_indent) {
-      if (target_depth == 0 && !in_else) {
-        // ;else: / ;elif at target level — begin collecting this block's
-        // segment.
-        in_else = true;
-        seg.clear();
-      } else if (in_else) {
-        // Inner ;else:/;elif at target level (nested same-level block) —
-        // include.
-        seg += line;
-      }
-    } else if (IsQppKw(lv, "pass") && this_indent == target_indent) {
-      if (target_depth == 0 && in_else) {
-        // ;pass at target level — finish this segment.
-        segments.push_back(seg);
-        in_else = false;
-      } else {
-        --target_depth;
-        if (in_else) seg += line;
-      }
-    } else {
-      // Directive at a different indent level, or non-directive line.
-      if (in_else) seg += line;
-    }
+// Returns a marker-directive prefix (';# __QPPSEG<n>_') that does not occur
+// in 'text', so markers of a recursive call never collide with markers of an
+// enclosing call (which are present in the recursive call's input).
+static std::string UniqueQppMarkerPrefix(std::string_view text) {
+  for (int n = 0;; ++n) {
+    std::string prefix = absl::StrCat(";# __QPPSEG", n, "_");
+    if (text.find(prefix) == std::string_view::npos) return prefix;
   }
-  return segments;
 }
 
-// Merge if_formatted (has if-branch content, blank placeholder for else) with
-// else-branch segments extracted from else_formatted.  For each outermost QPP
-// block:
-//   - if-branch content comes from if_fmt
-//   - else-branch content comes from else_segs (injected at the depth-1 ;else:)
-//   - QPP directive lines (;if, ;else:, ;pass) come from if_fmt
-//
-// Depth tracking: in if_fmt the outer ;if is present (unlike in else_fmt).
-// A ;else: at depth 1 (directly inside an outermost ;if) is the injection
-// point.  Inner ;else: at depth > 1 are already fully merged by the recursive
-// FormatVerilog call and are emitted verbatim.
-static std::string MergeQppBranches(const std::string &if_fmt,
-                                    const std::vector<std::string> &else_segs,
-                                    int target_indent) {
+static std::string QppBeginMarker(std::string_view prefix, size_t block) {
+  return absl::StrCat(prefix, "B", block, "__");
+}
+
+static std::string QppEndMarker(std::string_view prefix, size_t block) {
+  return absl::StrCat(prefix, "E", block, "__");
+}
+
+// Index of the arm of 'b' that pass 'pass' formats: arm 'pass' when it
+// exists, otherwise the block's last arm (formatted again, result unused) so
+// that the masked text still holds a real expansion of the block.
+static size_t QppArmForPass(const QppBlockBounds &b, size_t pass) {
+  return std::min(pass, b.arm_lines.size() - 1);
+}
+
+// First line after arm 'arm' of 'b': the next arm's directive or ;pass.
+static int QppArmEndLine(const QppBlockBounds &b, size_t arm) {
+  return arm + 1 < b.arm_lines.size() ? b.arm_lines[arm + 1] : b.pass_line;
+}
+
+// Returns 'line' with its trailing newline (if any) replaced by 'text' + the
+// same newline, i.e. 'text' substituted for the line's content.
+static std::string ReplaceLineContent(std::string_view line,
+                                      std::string_view text) {
+  const bool has_nl = !line.empty() && line.back() == '\n';
+  return absl::StrCat(text, has_nl ? "\n" : "");
+}
+
+// Builds the masked text for 'pass': for each block, only the content lines
+// of arm a = QppArmForPass(b, pass) are kept, arm a's directive line becomes
+// the block's begin marker, the ;pass line its end marker, and every other
+// line of the block (including the ;if line when a > 0) becomes an empty
+// line.  Empty lines before the begin marker fall outside the extracted
+// region; those between the arm and the end marker (the later arms) are
+// stripped by QppArmContent.
+static std::string MaskQppArm(std::string_view text,
+                              const std::vector<QppBlockBounds> &blocks,
+                              size_t pass, std::string_view prefix) {
+  std::vector<std::string> lines = SplitLines(text);
+  for (size_t j = 0; j < blocks.size(); ++j) {
+    const QppBlockBounds &b = blocks[j];
+    const size_t arm = QppArmForPass(b, pass);
+    const int keep_begin = b.arm_lines[arm] + 1;
+    const int keep_end = QppArmEndLine(b, arm);
+    for (int i = b.if_line; i < b.pass_line; ++i) {
+      if (i < keep_begin || i >= keep_end) {
+        lines[i] = ReplaceLineContent(lines[i], "");
+      }
+    }
+    lines[b.arm_lines[arm]] =
+        ReplaceLineContent(lines[b.arm_lines[arm]], QppBeginMarker(prefix, j));
+    lines[b.pass_line] =
+        ReplaceLineContent(lines[b.pass_line], QppEndMarker(prefix, j));
+  }
   std::string result;
-  // 'target_depth' counts ';if' at target_indent we are nested inside.
-  // Injection point: ';{target_indent}else:' when target_depth == 1
-  // (directly inside one outermost ;if).  Inner ';else:' at target_indent
-  // (target_depth > 1) are already merged by recursive FormatVerilog calls
-  // and are emitted verbatim.
-  int target_depth = 0;
-  bool in_else_section = false;
-  size_t else_seg_idx = 0;
-  for (const auto &line : SplitLines(if_fmt)) {
-    std::string_view lv = line;
-    if (!lv.empty() && lv.back() == '\n') lv.remove_suffix(1);
-    const int this_indent = GetQppIndent(lv);
-    if (IsQppKw(lv, "if") && this_indent == target_indent) {
-      ++target_depth;
-      result += line;
-    } else if ((IsQppKw(lv, "else") || IsQppKw(lv, "elif")) &&
-               this_indent == target_indent) {
-      result += line;
-      if (target_depth == 1 && !in_else_section) {
-        // Directly inside one outermost ;if — injection point.
-        in_else_section = true;
+  for (const auto &line : lines) result += line;
+  return result;
+}
+
+static bool IsBlankLine(std::string_view line) {
+  for (char c : line) {
+    if (c != ' ' && c != '\t' && c != '\r' && c != '\n') return false;
+  }
+  return true;
+}
+
+static std::string_view TrimLine(std::string_view line) {
+  while (!line.empty() && (line.back() == '\n' || line.back() == '\r' ||
+                           line.back() == ' ' || line.back() == '\t')) {
+    line.remove_suffix(1);
+  }
+  while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) {
+    line.remove_prefix(1);
+  }
+  return line;
+}
+
+// One masked block as found in a formatted pass output: the lines strictly
+// between its begin and end markers, plus the indices of the marker lines.
+struct QppMarkedRegion {
+  size_t begin_line;
+  size_t end_line;
+  std::vector<std::string> content;
+};
+
+// Locates the begin/end markers of every block in 'formatted' (the output of
+// one pass, split into lines).  Returns false if any marker is missing,
+// duplicated or out of order — the caller then falls back to single-pass.
+static bool FindQppMarkedRegions(const std::vector<std::string> &formatted,
+                                 size_t num_blocks, std::string_view prefix,
+                                 std::vector<QppMarkedRegion> *regions) {
+  regions->clear();
+  size_t line = 0;
+  for (size_t j = 0; j < num_blocks; ++j) {
+    const std::string begin = QppBeginMarker(prefix, j);
+    const std::string end = QppEndMarker(prefix, j);
+    while (line < formatted.size() && TrimLine(formatted[line]) != begin) {
+      if (TrimLine(formatted[line]).substr(0, prefix.size()) == prefix) {
+        return false;  // another marker before this block's begin marker
       }
-      // target_depth > 1: inner else/elif at target level, already merged —
-      // emit verbatim (already done by result += line above).
-    } else if (IsQppKw(lv, "pass") && this_indent == target_indent) {
-      if (in_else_section) {
-        if (else_seg_idx < else_segs.size())
-          result += else_segs[else_seg_idx++];
-        result += line;
-        in_else_section = false;
-        --target_depth;
-      } else {
-        --target_depth;
-        result += line;
+      ++line;
+    }
+    if (line >= formatted.size()) return false;
+    QppMarkedRegion region{line, 0, {}};
+    ++line;
+    while (line < formatted.size() && TrimLine(formatted[line]) != end) {
+      if (TrimLine(formatted[line]).substr(0, prefix.size()) == prefix) {
+        return false;  // nested/mismatched marker
       }
-    } else if (in_else_section) {
-      // Skip blank placeholder lines from the if_fmt else section.
-    } else {
-      result += line;
+      region.content.push_back(formatted[line]);
+      ++line;
+    }
+    if (line >= formatted.size()) return false;
+    region.end_line = line;
+    ++line;
+    regions->push_back(std::move(region));
+  }
+  return true;
+}
+
+// Returns the formatted content of one arm: 'content' minus the empty lines
+// that MaskQppArm introduced after it (the later arms and their directive
+// lines).  The formatter preserves blank-line runs, so at most 'trailing'
+// blank lines are removed, and only blank ones, which can never drop
+// non-whitespace text.
+static std::string QppArmContent(const std::vector<std::string> &content,
+                                 size_t trailing) {
+  const size_t first = 0;
+  size_t last = content.size();
+  while (last > first && trailing > 0 && IsBlankLine(content[last - 1])) {
+    --last;
+    --trailing;
+  }
+  std::string result;
+  for (size_t i = first; i < last; ++i) result += content[i];
+  return result;
+}
+
+// Returns 'text' with all whitespace removed.
+static std::string NonWhitespace(std::string_view text) {
+  std::string result;
+  result.reserve(text.size());
+  for (char c : text) {
+    if (c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\f' &&
+        c != '\v') {
+      result += c;
     }
   }
   return result;
+}
+
+// Formats 'text' arm by arm (see the section comment above).  'blocks' are
+// the outermost masked blocks.  On success stores the merged output in
+// 'formatted_text' and returns OK, or kResourceExhausted if any pass hit the
+// line-wrap search limit (non-fatal: that pass's output is still complete
+// and verified, like single-pass formatting).  Returns any other non-OK
+// status if a pass fails or a marker is lost; the caller then falls back to
+// single-pass formatting.
+static Status FormatQppSequential(std::string_view text,
+                                  const std::vector<QppBlockBounds> &blocks,
+                                  std::string_view filename,
+                                  const FormatStyle &style,
+                                  const LineNumberSet &lines,
+                                  const ExecutionControl &inner_control,
+                                  std::string *formatted_text) {
+  const std::vector<std::string> src_lines = SplitLines(text);
+  const std::string prefix = UniqueQppMarkerPrefix(text);
+  size_t num_passes = 0;
+  for (const auto &b : blocks) {
+    num_passes = std::max(num_passes, b.arm_lines.size());
+  }
+
+  // pass_regions[k][j]: block j's marked region in the output of pass k.
+  std::vector<std::vector<QppMarkedRegion>> pass_regions(num_passes);
+  std::vector<std::string> skeleton;  // pass-0 output lines
+  Status result_status;
+  for (size_t k = 0; k < num_passes; ++k) {
+    const std::string masked = MaskQppArm(text, blocks, k, prefix);
+    std::ostringstream stream;
+    const Status status =
+        FormatVerilog(masked, filename, style, stream, lines, inner_control);
+    if (!status.ok()) {
+      // kResourceExhausted comes with usable (partially formatted, verified)
+      // output, like single-pass formatting; any other failure aborts the
+      // sequential strategy.
+      if (status.code() != StatusCode::kResourceExhausted) return status;
+      if (result_status.ok()) result_status = status;
+    }
+    std::vector<std::string> out_lines = SplitLines(stream.str());
+    if (!FindQppMarkedRegions(out_lines, blocks.size(), prefix,
+                              &pass_regions[k])) {
+      return absl::InternalError(
+          "QPP sequential formatting lost a branch marker");
+    }
+    if (k == 0) skeleton = std::move(out_lines);
+  }
+
+  // Rebuild from the pass-0 skeleton, replacing each marked region with the
+  // original directive lines and the formatted content of every arm.
+  std::string result;
+  size_t line = 0;
+  for (size_t j = 0; j < blocks.size(); ++j) {
+    const QppBlockBounds &b = blocks[j];
+    const QppMarkedRegion &skel = pass_regions[0][j];
+    for (; line < skel.begin_line; ++line) result += skeleton[line];
+    for (size_t arm = 0; arm < b.arm_lines.size(); ++arm) {
+      result += src_lines[b.arm_lines[arm]];
+      const size_t trailing = b.pass_line - QppArmEndLine(b, arm);
+      result += QppArmContent(pass_regions[arm][j].content, trailing);
+    }
+    // ;pass line: original text, with the newline the formatter emitted.
+    std::string_view pass_src = src_lines[b.pass_line];
+    if (!pass_src.empty() && pass_src.back() == '\n') pass_src.remove_suffix(1);
+    result += ReplaceLineContent(skeleton[skel.end_line], pass_src);
+    line = skel.end_line + 1;
+  }
+  for (; line < skeleton.size(); ++line) result += skeleton[line];
+  *formatted_text = std::move(result);
+  return result_status;
 }
 
 Status FormatVerilog(std::string_view text, std::string_view filename,
@@ -753,57 +875,61 @@ Status FormatVerilog(std::string_view text, std::string_view filename,
   // Scan for QPP if/else/pass blocks and choose the formatting strategy:
   //   sequential : each branch formatted independently (preferred)
   //   single-pass: both branches visible simultaneously (fallback)
-  // Sequential is used whenever there are else-branches; nested blocks are
+  // Sequential is used whenever there are elif/else arms; nested blocks are
   // handled by masking only outermost blocks and recursing into this function.
   const std::vector<QppBlockBounds> qpp_blocks = ScanQppBlocks(effective_text);
   // Determine which blocks to handle sequentially.  A block qualifies only
-  // when its else-branch contains at least one non-blank line — blocks whose
-  // else-branch was already replaced by blank placeholder lines (e.g. in a
-  // recursive call from the outer sequential pass) are excluded, which
-  // prevents infinite recursion.  Among qualifying blocks, only the outermost
-  // ones (not nested inside another qualifying block) are masked at this
-  // level; inner blocks are handled by the recursive call.
+  // when its elif/else arms contain at least one non-blank line (a block whose
+  // alternate arms are empty formats identically in single-pass).  Among
+  // qualifying blocks, only the outermost ones (not nested inside another
+  // qualifying block) are masked at this level, whatever their QPP indent;
+  // inner blocks are handled by the recursive call.  Masked blocks lose their
+  // ;if line to a marker directive, so a recursive call cannot re-detect them.
   const std::vector<QppBlockBounds> outermost_active =
       GetMaskedOutermostBlocks(qpp_blocks, effective_text);
   const bool use_sequential = !outermost_active.empty();
 
   std::string formatted_text;
   Status format_status;
+  bool sequential_ok = false;
 
   if (use_sequential) {
-    const std::vector<QppBlockBounds> &outermost_blocks = outermost_active;
-
-    // Inner pass: disable convergence check — the outer call owns that.
+    // Inner passes: disable convergence check — the outer call owns that.
     ExecutionControl inner_control = control;
     inner_control.verify_convergence = false;
-
-    // Pass 1: format if-masked text (else-branches of outermost blocks
-    // replaced by blank lines).  Inner QPP blocks remain and are formatted
-    // sequentially by the recursive FormatVerilog(string_view) call.
-    const std::string if_masked =
-        MaskQppBranches(effective_text, /*keep_if=*/true, outermost_blocks);
-    std::ostringstream if_stream;
-    format_status = FormatVerilog(if_masked, filename, style, if_stream, lines,
-                                  inner_control);
-    formatted_text = if_stream.str();
-
-    // Pass 2: format else-masked text, extract else-branch content.
-    const std::string else_masked =
-        MaskQppBranches(effective_text, /*keep_if=*/false, outermost_blocks);
-    std::ostringstream else_stream;
-    if (FormatVerilog(else_masked, filename, style, else_stream, lines,
-                      inner_control)
-            .ok()) {
-      // Merge: substitute formatted else-branch content into if-formatted.
-      const int target_indent =
-          outermost_blocks.empty() ? 0 : outermost_blocks[0].indent;
-      formatted_text = MergeQppBranches(
-          formatted_text, ExtractElseSegments(else_stream.str(), target_indent),
-          target_indent);
+    format_status =
+        FormatQppSequential(effective_text, outermost_active, filename, style,
+                            lines, inner_control, &formatted_text);
+    sequential_ok = format_status.ok() ||
+                    format_status.code() == StatusCode::kResourceExhausted;
+    if (!sequential_ok) {
+      // An arm failed to format on its own (e.g. a branch that is only valid
+      // SV together with its sibling).  Fall back to single-pass formatting
+      // with all arms visible; never emit a partially merged result.
+      const Status sequential_status = format_status;
+      const auto analyzer = ParseWithStatus(effective_text, filename);
+      if (!analyzer.ok()) return sequential_status;
+      formatted_text.clear();
+      format_status = FormatVerilog(analyzer->get()->Data(), filename, style,
+                                    &formatted_text, lines, control);
     }
-    // If else-masked fails to parse (unbalanced branch), formatted_text
-    // retains the if-only result with blank else placeholders — acceptable
-    // degraded output.  The user can fix the unbalanced branch.
+    // Lossless guard: QPP formatting may only change whitespace.  Any
+    // difference in the non-whitespace character stream of output that is
+    // about to be emitted is code loss.  (A fatal status emits nothing and
+    // is returned below as is.)
+    const bool emits_output =
+        format_status.ok() ||
+        format_status.code() == StatusCode::kResourceExhausted;
+    if (emits_output &&
+        NonWhitespace(effective_text) != NonWhitespace(formatted_text)) {
+      // Hand the rejected text to the caller for diagnostics only; callers
+      // must not use the output of a failed format (the tool prints the
+      // original input instead).
+      formatted_stream << RestoreQppInlineExprs(formatted_text, qpp_subs);
+      return absl::DataLossError(
+          "QPP formatting changed non-whitespace content (code loss); "
+          "refusing to emit output.  Please file a bug.");
+    }
   } else {
     // Single-pass: both branches visible simultaneously.
     const auto analyzer = ParseWithStatus(effective_text, filename);
@@ -829,9 +955,8 @@ Status FormatVerilog(std::string_view text, std::string_view filename,
   if (control.verify_convergence) {
     std::string convergence_buf;
     std::string_view cv_text = effective_text;
-    if (use_sequential) {
-      convergence_buf =
-          MaskQppBranches(effective_text, /*keep_if=*/true, outermost_active);
+    if (sequential_ok) {
+      convergence_buf = MaskQppElseArms(effective_text, outermost_active);
       cv_text = convergence_buf;
     }
     std::ostringstream reformat_stream;

@@ -31,6 +31,7 @@
 // valid SV (e.g. bit-range positions like [`expr`-1:0]).
 
 #include <sstream>
+#include <string>
 #include <string_view>
 
 #include "absl/status/status.h"
@@ -337,6 +338,8 @@ TEST(QppFormatterTest, NestedSequentialBothElseBranchesPreserved) {
 //
 // ;elif is treated identically to ;else: in block scanning and merging.
 // Each branch must be preserved and the SV in each branch indented normally.
+// Every arm is formatted on its own (in its own pass), so declarations are
+// not aligned across arms: '[7:0]' is not padded to the width of '[15:0]'.
 // ---------------------------------------------------------------------------
 TEST(QppFormatterTest, ElifBranchFormatted) {
   const FormatStyle style = DefaultStyle();
@@ -359,7 +362,7 @@ TEST(QppFormatterTest, ElifBranchFormatted) {
           ";elif (config['W'] == 16):\n"
           "  logic [15:0] data;\n"
           ";else:\n"
-          "  logic [ 7:0] data;\n"
+          "  logic [7:0] data;\n"
           ";pass\n"
           "endmodule\n",
       },
@@ -463,6 +466,220 @@ TEST(QppFormatterTest, BitRangeWrappedLineIsIdempotent) {
       },
   };
   for (const auto &tc : kCases) RunFormatterTest(tc, style);
+}
+
+
+// ---------------------------------------------------------------------------
+// Lossless QPP formatting
+//
+// The formatter may only change whitespace.  These cases assert that
+// input == output once all whitespace is removed, covering ;if / ;elif /
+// ;else: bodies and the directive lines themselves.  Each case is a pattern
+// that used to drop code silently (rc 0):
+//   - a block with ;else: inside a ;if that has no ;else: (QPP indent 1)
+//     next to a top-level block with ;else: (indent 0): only the first
+//     block's indent level was merged, the inner ;else: body was dropped;
+//   - an ;if/;elif/;else: chain whose ;elif and ;else: bodies are only valid
+//     SV one at a time: both were formatted together, the pass failed, and
+//     every ;elif/;else: body in the file (and the ;else: line) was dropped.
+// ---------------------------------------------------------------------------
+static std::string StripWhitespace(std::string_view text) {
+  std::string result;
+  for (char c : text) {
+    if (c != ' ' && c != '\t' && c != '\n' && c != '\r') result += c;
+  }
+  return result;
+}
+
+// Formats 'input' and returns the status; on success asserts that the output
+// equals the input modulo whitespace and that formatting is idempotent.
+static absl::Status ExpectLosslessFormat(std::string_view input,
+                                         std::string *output = nullptr) {
+  const FormatStyle style = DefaultStyle();
+  std::ostringstream stream;
+  const absl::Status status =
+      FormatVerilog(input, "<qpp-lossless-test>", style, stream);
+  if (!status.ok()) return status;
+  const std::string formatted = stream.str();
+  EXPECT_EQ(StripWhitespace(formatted), StripWhitespace(input))
+      << "input:\n" << input << "\noutput:\n" << formatted;
+  std::ostringstream again;
+  EXPECT_OK(FormatVerilog(formatted, "<qpp-lossless-test>", style, again));
+  EXPECT_EQ(again.str(), formatted) << "not idempotent; input:\n" << input;
+  if (output != nullptr) *output = formatted;
+  return status;
+}
+
+TEST(QppFormatterTest, LosslessMixedIndentElseBodies) {
+  // Inner ;    else: body inside a ;if without ;else:, next to a top-level
+  // ;if/;else: block.
+  static constexpr std::string_view kInput =
+      "module m;\n"
+      ";if (config['A'] == 'X'):\n"
+      "assign a = 1;\n"
+      ";else:\n"
+      "assign a = 2;\n"
+      ";pass\n"
+      ";if (config['B'] != 'OFF'):\n"
+      ";    if (config['B'] == 'ECC'):\n"
+      "assign b = 1;\n"
+      ";    else:\n"
+      "assign b = 2;\n"
+      ";    pass\n"
+      ";pass\n"
+      "endmodule\n";
+  static constexpr std::string_view kExpected =
+      "module m;\n"
+      ";if (config['A'] == 'X'):\n"
+      "  assign a = 1;\n"
+      ";else:\n"
+      "  assign a = 2;\n"
+      ";pass\n"
+      ";if (config['B'] != 'OFF'):\n"
+      ";    if (config['B'] == 'ECC'):\n"
+      "  assign b = 1;\n"
+      ";    else:\n"
+      "  assign b = 2;\n"
+      ";    pass\n"
+      ";pass\n"
+      "endmodule\n";
+  std::string output;
+  EXPECT_OK(ExpectLosslessFormat(kInput, &output));
+  EXPECT_EQ(output, kExpected);
+}
+
+TEST(QppFormatterTest, LosslessElifChainArmsFormattedSeparately) {
+  // ;elif and ;else: bodies of the parameter list are not valid SV together
+  // (no ',' between them); each arm must be formatted on its own.  The
+  // second block's ;else: body must survive as well.
+  static constexpr std::string_view kInput =
+      "module m #(\n"
+      ";if (config['P'] == 'ECC'):\n"
+      "  parameter A = 1,\n"
+      "  parameter W = 2\n"
+      ";elif (config['P'] == 'PAR'):\n"
+      "  parameter W = 3\n"
+      ";else:\n"
+      "  parameter W = 4\n"
+      ";pass\n"
+      ");\n"
+      ";if (config['B'] == 'C'):\n"
+      "// customer\n"
+      ";else:\n"
+      "  assign x = y;\n"
+      ";pass\n"
+      "endmodule\n";
+  EXPECT_OK(ExpectLosslessFormat(kInput));
+}
+
+TEST(QppFormatterTest, LosslessIfElifElseBodiesAndDirectives) {
+  static constexpr std::string_view kCases[] = {
+      // Three statement arms plus a nested block inside the ;elif body and
+      // inside the ;else: body, with Python statements and comments.
+      "module m;\n"
+      ";x = int(config['N'])\n"
+      ";if (config['P'] == 'ECC'): # {\n"
+      "always_comb begin\n"
+      "a = 1;\n"
+      "end\n"
+      ";elif (config['P'] == 'PAR'): # } {\n"
+      ";    if (config['Q']): # {\n"
+      "assign b = 1;\n"
+      ";    else: # } {\n"
+      "assign b = 2;\n"
+      ";    pass # }\n"
+      "assign a = 2;\n"
+      ";else: # } {\n"
+      ";    # comment directive inside the else arm\n"
+      ";    if (config['R']):\n"
+      "assign c = 1;\n"
+      ";    elif (config['S']):\n"
+      "assign c = 2;\n"
+      ";    else:\n"
+      "assign c = 3;\n"
+      ";    pass\n"
+      "assign a = 3;\n"
+      ";pass # }\n"
+      "endmodule\n",
+      // Blocks with different arm counts, an empty ;if body, a block whose
+      // ;else: is empty, and a final ;pass without a trailing newline.
+      "module m;\n"
+      ";if (config['A']):\n"
+      ";else:\n"
+      "assign a = 1;\n"
+      ";pass\n"
+      ";if (config['B']):\n"
+      "assign b = 1;\n"
+      ";else:\n"
+      ";pass\n"
+      ";if (config['C'] == 1):\n"
+      "assign c = 1;\n"
+      ";elif (config['C'] == 2):\n"
+      "assign c = 2;\n"
+      ";elif (config['C'] == 3):\n"
+      "\n"
+      "assign c = 3;\n"
+      "\n"
+      ";else:\n"
+      "assign c = 4;\n"
+      ";pass\n"
+      "endmodule\n"
+      ";if (config['D']):\n"
+      "module d; endmodule\n"
+      ";else:\n"
+      "module e; endmodule\n"
+      ";pass",
+      // Nested ;else: inside the ;if body of an outer ;if/;else: block, and
+      // an ;if-only container holding an ;if/;else: at indent 1, inside an
+      // always_comb (statement context).
+      "module m;\n"
+      "always_comb begin\n"
+      ";if (config['A']):\n"
+      ";    if (config['B']):\n"
+      "x = 1;\n"
+      ";    else:\n"
+      "x = 2;\n"
+      ";    pass\n"
+      ";else:\n"
+      "x = 3;\n"
+      ";pass\n"
+      ";if (config['C']):\n"
+      ";    if (config['D']):\n"
+      "y = 1;\n"
+      ";    else:\n"
+      "y = 2;\n"
+      ";    pass\n"
+      ";pass\n"
+      "end\n"
+      "endmodule\n",
+  };
+  for (const auto input : kCases) EXPECT_OK(ExpectLosslessFormat(input));
+}
+
+TEST(QppFormatterTest, ArmsOnlyValidTogetherNeverLoseCode) {
+  // Neither formatting outcome may be a silent loss: the formatter either
+  // succeeds losslessly (single-pass fallback) or reports an error.
+  static constexpr std::string_view kCases[] = {
+      // Arm 0 alone is a syntax error; arms together parse.
+      "module m;\n"
+      ";if (config['A']):\n"
+      "assign a = b\n"
+      ";else:\n"
+      ";\n"
+      ";pass\n"
+      "endmodule\n",
+      // No expansion parses at all: must be an error, not rc 0.
+      "module m;\n"
+      ";if (config['A']):\n"
+      "assign a = (b\n"
+      ";else:\n"
+      "assign a = (c\n"
+      ";pass\n"
+      "endmodule\n",
+  };
+  // ExpectLosslessFormat asserts losslessness whenever the status is OK.
+  EXPECT_OK(ExpectLosslessFormat(kCases[0]));
+  EXPECT_FALSE(ExpectLosslessFormat(kCases[1]).ok());
 }
 
 }  // namespace
